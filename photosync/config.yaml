@@ -1,5 +1,5 @@
 name: PhotoSync
-version: "0.2.0"
+version: "0.3.0"
 slug: photosync
 description: Sync photos from Koofr cloud to USB drives
 url: https://github.com/aksareen/ha-addon-photosync
@@ -14,8 +14,12 @@ panel_icon: mdi:camera
 panel_title: PhotoSync
 init: false
 homeassistant_api: true
+privileged:
+  - SYS_ADMIN
+full_access: true
 map:
   - media:rw
+  - share:rw
 options:
   koofr_email: ""
   koofr_password: ""

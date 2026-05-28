@@ -5,7 +5,7 @@ import time
 
 from flask import Flask, jsonify, render_template, request
 
-from detect import get_drives
+from detect import eject_device, get_drives, mount_device, scan_and_mount
 from sync import cancel_sync, pause_sync, resume_sync, run_sync, send_notification
 
 app = Flask(__name__)
@@ -50,15 +50,48 @@ def _fresh_job():
     }
 
 
-def _get_job(label):
+def _get_job(drive_id):
     with sync_lock:
-        if label not in sync_jobs:
-            sync_jobs[label] = _fresh_job()
-        return sync_jobs[label]
+        if drive_id not in sync_jobs:
+            sync_jobs[drive_id] = _fresh_job()
+        return sync_jobs[drive_id]
 
 
-def _run_sync_thread(label, mount_path):
-    job = _get_job(label)
+def _find_drive(drive_id):
+    return next((d for d in get_drives(FOLDER_NAME) if d["id"] == drive_id), None)
+
+
+def _drive_with_sync(drive):
+    job = _get_job(drive["id"])
+    with sync_lock:
+        s = dict(job)
+        s["progress_lines"] = list(job["progress_lines"])
+    drive["sync"] = s
+    return drive
+
+
+# ── Background scanner ──
+
+def _scanner_loop():
+    time.sleep(5)
+    while True:
+        try:
+            results = scan_and_mount()
+            for r in results:
+                print(f"[photosync] auto-mounted {r['device']} at {r['mount_path']}")
+        except Exception as e:
+            print(f"[photosync] scan error: {e}")
+        time.sleep(30)
+
+
+_scanner = threading.Thread(target=_scanner_loop, daemon=True)
+_scanner.start()
+
+
+# ── Sync thread ──
+
+def _run_sync_thread(drive_id, mount_path, label):
+    job = _get_job(drive_id)
 
     with sync_lock:
         fresh = _fresh_job()
@@ -170,14 +203,7 @@ def _run_sync_thread(label, mount_path):
     )
 
 
-def _drive_with_sync(drive):
-    job = _get_job(drive["label"])
-    with sync_lock:
-        s = dict(job)
-        s["progress_lines"] = list(job["progress_lines"])
-    drive["sync"] = s
-    return drive
-
+# ── Routes ──
 
 @app.route("/")
 def index():
@@ -186,30 +212,78 @@ def index():
     return render_template("index.html", drives=drives, ingress_path=ingress_path)
 
 
-@app.route("/api/sync/<label>", methods=["POST"])
-def trigger_sync(label):
-    drives = get_drives(FOLDER_NAME)
-    drive = next((d for d in drives if d["label"] == label), None)
+@app.route("/api/status")
+def api_status():
+    drives = [_drive_with_sync(d) for d in get_drives(FOLDER_NAME)]
+    return jsonify(drives)
+
+
+@app.route("/api/mount/<drive_id>", methods=["POST"])
+def api_mount(drive_id):
+    drive = _find_drive(drive_id)
     if not drive:
         return jsonify({"error": "Drive not found"}), 404
+    if drive["mounted"]:
+        return jsonify({"error": "Already mounted"}), 400
+    try:
+        mount_path = mount_device(drive["device"])
+        return jsonify({"status": "mounted", "mount_path": mount_path})
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/eject/<drive_id>", methods=["POST"])
+def api_eject(drive_id):
+    drive = _find_drive(drive_id)
+    if not drive:
+        return jsonify({"error": "Drive not found"}), 404
+    if not drive["mounted"]:
+        return jsonify({"error": "Not mounted"}), 400
+
+    job = _get_job(drive_id)
+    with sync_lock:
+        if job["status"] in ("syncing", "paused"):
+            return jsonify({"error": "Sync in progress — cancel first"}), 409
+
+    try:
+        eject_device(drive["mount_path"], drive["device"])
+        send_notification(
+            f"Drive '{drive['label']}' safely ejected. You can unplug it now.",
+            title="PhotoSync",
+            notify_service=NOTIFY_SERVICE,
+        )
+        return jsonify({"status": "ejected"})
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sync/<drive_id>", methods=["POST"])
+def trigger_sync(drive_id):
+    drive = _find_drive(drive_id)
+    if not drive:
+        return jsonify({"error": "Drive not found"}), 404
+    if not drive["mounted"]:
+        return jsonify({"error": "Drive not mounted"}), 400
     if not drive["has_sync_folder"]:
         return jsonify({"error": "PhotoSync folder does not exist"}), 400
 
-    job = _get_job(label)
+    job = _get_job(drive_id)
     with sync_lock:
         if job["status"] in ("syncing", "paused", "cancelling"):
             return jsonify({"error": "Sync already in progress"}), 409
 
     thread = threading.Thread(
-        target=_run_sync_thread, args=(label, drive["mount_path"]), daemon=True,
+        target=_run_sync_thread,
+        args=(drive_id, drive["mount_path"], drive["label"]),
+        daemon=True,
     )
     thread.start()
     return jsonify({"status": "started"})
 
 
-@app.route("/api/pause/<label>", methods=["POST"])
-def api_pause(label):
-    job = _get_job(label)
+@app.route("/api/pause/<drive_id>", methods=["POST"])
+def api_pause(drive_id):
+    job = _get_job(drive_id)
     with sync_lock:
         if job["status"] != "syncing":
             return jsonify({"error": "Not syncing"}), 400
@@ -222,9 +296,9 @@ def api_pause(label):
         return jsonify({"error": "Failed to pause"}), 500
 
 
-@app.route("/api/resume/<label>", methods=["POST"])
-def api_resume(label):
-    job = _get_job(label)
+@app.route("/api/resume/<drive_id>", methods=["POST"])
+def api_resume(drive_id):
+    job = _get_job(drive_id)
     with sync_lock:
         if job["status"] != "paused":
             return jsonify({"error": "Not paused"}), 400
@@ -237,9 +311,9 @@ def api_resume(label):
         return jsonify({"error": "Failed to resume"}), 500
 
 
-@app.route("/api/cancel/<label>", methods=["POST"])
-def api_cancel(label):
-    job = _get_job(label)
+@app.route("/api/cancel/<drive_id>", methods=["POST"])
+def api_cancel(drive_id):
+    job = _get_job(drive_id)
     with sync_lock:
         if job["status"] not in ("syncing", "paused"):
             return jsonify({"error": "Not syncing"}), 400
@@ -254,24 +328,19 @@ def api_cancel(label):
         return jsonify({"error": "Failed to cancel"}), 500
 
 
-@app.route("/api/create-folder/<label>", methods=["POST"])
-def create_folder(label):
-    drives = get_drives(FOLDER_NAME)
-    drive = next((d for d in drives if d["label"] == label), None)
+@app.route("/api/create-folder/<drive_id>", methods=["POST"])
+def create_folder(drive_id):
+    drive = _find_drive(drive_id)
     if not drive:
         return jsonify({"error": "Drive not found"}), 404
+    if not drive["mounted"]:
+        return jsonify({"error": "Drive not mounted"}), 400
     folder_path = os.path.join(drive["mount_path"], FOLDER_NAME)
     try:
         os.makedirs(folder_path, exist_ok=True)
         return jsonify({"status": "created", "path": folder_path})
     except OSError as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/status")
-def api_status():
-    drives = [_drive_with_sync(d) for d in get_drives(FOLDER_NAME)]
-    return jsonify(drives)
 
 
 if __name__ == "__main__":

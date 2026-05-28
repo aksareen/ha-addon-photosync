@@ -8,7 +8,9 @@ RUN apk add --no-cache \
     rclone \
     jq \
     bash \
-    curl
+    curl \
+    blkid \
+    util-linux
 
 COPY rootfs/ /
 COPY run.sh /
