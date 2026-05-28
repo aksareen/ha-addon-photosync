@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PhotoSync</title>
+  <style>
+    :root {
+      --bg: #1c1c1c;
+      --card-bg: #2c2c2c;
+      --text: #e1e1e1;
+      --text-muted: #999;
+      --accent: #4dabf7;
+      --accent-hover: #339af0;
+      --green: #51cf66;
+      --yellow: #fcc419;
+      --red: #ff6b6b;
+      --border: #3a3a3a;
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f5f5;
+        --card-bg: #ffffff;
+        --text: #1a1a1a;
+        --text-muted: #666;
+        --accent: #1c7ed6;
+        --accent-hover: #1864ab;
+        --green: #2b8a3e;
+        --yellow: #e67700;
+        --red: #c92a2a;
+        --border: #dee2e6;
+      }
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 20px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 32px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header h1 {
+      font-size: 24px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .header .subtitle {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-top: 4px;
+    }
+
+    .no-drives {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+
+    .no-drives .icon { font-size: 48px; margin-bottom: 12px; }
+
+    .drive-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .drive-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .drive-label {
+      font-size: 18px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .drive-path {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+
+    .space-bar-container {
+      margin-bottom: 12px;
+    }
+
+    .space-bar {
+      height: 8px;
+      background: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 4px;
+    }
+
+    .space-bar-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .space-bar-fill.warning { background: var(--yellow); }
+    .space-bar-fill.danger { background: var(--red); }
+
+    .space-text {
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .folder-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    .folder-status.exists { color: var(--green); }
+    .folder-status.missing { color: var(--yellow); }
+
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+    .btn-secondary {
+      background: var(--border);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: var(--text-muted);
+      color: #fff;
+    }
+
+    .sync-status {
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
+    .sync-status .label { color: var(--text-muted); }
+
+    .status-idle { color: var(--text-muted); }
+    .status-syncing { color: var(--accent); }
+    .status-complete { color: var(--green); }
+    .status-failed { color: var(--red); }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 4px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .log-area {
+      background: #111;
+      color: #aaa;
+      font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      padding: 10px;
+      border-radius: 6px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      display: none;
+    }
+
+    .log-area.visible { display: block; }
+
+    @media (prefers-color-scheme: light) {
+      .log-area {
+        background: #f0f0f0;
+        color: #333;
+      }
+    }
+
+    .timestamp {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    @media (max-width: 600px) {
+      body { padding: 12px; }
+      .drive-card { padding: 14px; }
+      .drive-header { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body data-ingress-path="{{ ingress_path }}">
+
+  <div class="header">
+    <h1>&#128247; PhotoSync</h1>
+    <div class="subtitle">Koofr &#8594; USB Drive Sync</div>
+  </div>
+
+  <div id="drives-container">
+    {% if drives %}
+      {% for drive in drives %}
+      <div class="drive-card" data-label="{{ drive.label }}">
+        <div class="drive-header">
+          <div>
+            <div class="drive-label">&#128190; {{ drive.label }}</div>
+            <div class="drive-path">{{ drive.mount_path }}</div>
+          </div>
+        </div>
+
+        <div class="space-bar-container">
+          {% set pct = ((drive.used_bytes / drive.total_bytes) * 100) if drive.total_bytes > 0 else 0 %}
+          <div class="space-bar">
+            <div class="space-bar-fill {% if pct > 90 %}danger{% elif pct > 75 %}warning{% endif %}"
+                 style="width: {{ pct | round(1) }}%"></div>
+          </div>
+          <div class="space-text">
+            <span>{{ (drive.used_bytes / 1073741824) | round(1) }} GB used of {{ (drive.total_bytes / 1073741824) | round(1) }} GB</span>
+            <span>{{ (drive.free_bytes / 1073741824) | round(1) }} GB free</span>
+          </div>
+        </div>
+
+        <div class="folder-status {% if drive.has_sync_folder %}exists{% else %}missing{% endif %}">
+          {% if drive.has_sync_folder %}
+            &#10003; PhotoSync folder exists
+          {% else %}
+            &#9888; No PhotoSync folder
+          {% endif %}
+        </div>
+
+        <div class="actions">
+          {% if not drive.has_sync_folder %}
+            <button class="btn btn-secondary" onclick="createFolder('{{ drive.label }}')">Create Folder</button>
+          {% endif %}
+          <button class="btn btn-primary btn-sync"
+                  data-label="{{ drive.label }}"
+                  onclick="triggerSync('{{ drive.label }}')"
+                  {% if not drive.has_sync_folder or drive.sync.status == 'syncing' %}disabled{% endif %}>
+            {% if drive.sync.status == 'syncing' %}
+              <span class="spinner"></span> Syncing...
+            {% else %}
+              Sync Now
+            {% endif %}
+          </button>
+        </div>
+
+        <div class="sync-status">
+          <span class="label">Status:</span>
+          <span class="status-value status-{{ drive.sync.status }}">
+            {% if drive.sync.status == 'idle' %}Idle
+            {% elif drive.sync.status == 'syncing' %}<span class="spinner"></span> Syncing...
+            {% elif drive.sync.status == 'complete' %}Complete
+            {% elif drive.sync.status == 'failed' %}Failed
+            {% endif %}
+          </span>
+          {% if drive.sync.error %}
+            <span class="status-failed"> &mdash; {{ drive.sync.error }}</span>
+          {% endif %}
+          {% if drive.sync.completed_at %}
+            <span class="timestamp"> ({{ drive.sync.completed_at }})</span>
+          {% endif %}
+        </div>
+
+        <div class="log-area {% if drive.sync.progress_lines %}visible{% endif %}" id="log-{{ drive.label }}">
+          {%- for line in drive.sync.progress_lines %}{{ line }}
+{% endfor -%}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="no-drives">
+        <div class="icon">&#128268;</div>
+        <div>No USB drives detected in /media/</div>
+        <div style="margin-top: 8px; font-size: 13px;">Plug in a drive and refresh the page.</div>
+      </div>
+    {% endif %}
+  </div>
+
+  <script>
+    var BASE = document.body.getAttribute("data-ingress-path") || "";
+
+    function apiUrl(path) {
+      return BASE + path;
+    }
+
+    function createFolder(label) {
+      fetch(apiUrl("/api/create-folder/" + encodeURIComponent(label)), { method: "POST" })
+        .then(function(r) { return r.json(); })
+        .then(function() { location.reload(); })
+        .catch(function(e) { alert("Error creating folder: " + e); });
+    }
+
+    function triggerSync(label) {
+      var btn = document.querySelector('.btn-sync[data-label="' + label + '"]');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Syncing...'; }
+
+      fetch(apiUrl("/api/sync/" + encodeURIComponent(label)), { method: "POST" })
+        .then(function(r) {
+          if (r.status === 409) {
+            alert("Sync is already in progress for this drive.");
+            return;
+          }
+          if (!r.ok) { return r.json().then(function(d) { alert(d.error || "Error"); }); }
+          pollFast = true;
+        })
+        .catch(function(e) { alert("Error starting sync: " + e); });
+    }
+
+    var pollFast = false;
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return "0 B";
+      var units = ["B", "KB", "MB", "GB", "TB"];
+      var i = Math.floor(Math.log(bytes) / Math.log(1024));
+      return (bytes / Math.pow(1024, i)).toFixed(1) + " " + units[i];
+    }
+
+    function updateDrives(drives) {
+      var anySyncing = false;
+      var container = document.getElementById("drives-container");
+
+      drives.forEach(function(drive) {
+        var card = container.querySelector('.drive-card[data-label="' + drive.label + '"]');
+        if (!card) return;
+
+        var sync = drive.sync;
+        if (sync.status === "syncing") anySyncing = true;
+
+        var btn = card.querySelector(".btn-sync");
+        if (btn) {
+          if (sync.status === "syncing") {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Syncing...';
+          } else {
+            btn.disabled = !drive.has_sync_folder;
+            btn.textContent = "Sync Now";
+          }
+        }
+
+        var statusEl = card.querySelector(".sync-status");
+        if (statusEl) {
+          var statusText;
+          if (sync.status === "idle") statusText = '<span class="status-idle">Idle</span>';
+          else if (sync.status === "syncing") statusText = '<span class="status-syncing"><span class="spinner"></span> Syncing...</span>';
+          else if (sync.status === "complete") statusText = '<span class="status-complete">Complete</span>';
+          else if (sync.status === "failed") statusText = '<span class="status-failed">Failed</span>';
+
+          var extra = "";
+          if (sync.error) extra += ' <span class="status-failed"> &mdash; ' + sync.error + "</span>";
+          if (sync.completed_at) extra += ' <span class="timestamp"> (' + sync.completed_at + ")</span>";
+
+          statusEl.innerHTML = '<span class="label">Status:</span> ' + statusText + extra;
+        }
+
+        var folderEl = card.querySelector(".folder-status");
+        if (folderEl) {
+          if (drive.has_sync_folder) {
+            folderEl.className = "folder-status exists";
+            folderEl.innerHTML = "&#10003; PhotoSync folder exists";
+          } else {
+            folderEl.className = "folder-status missing";
+            folderEl.innerHTML = "&#9888; No PhotoSync folder";
+          }
+        }
+
+        var logEl = document.getElementById("log-" + drive.label);
+        if (logEl && sync.progress_lines) {
+          if (sync.progress_lines.length > 0) {
+            logEl.classList.add("visible");
+            logEl.textContent = sync.progress_lines.join("\n");
+            logEl.scrollTop = logEl.scrollHeight;
+          }
+        }
+
+        var pct = drive.total_bytes > 0 ? (drive.used_bytes / drive.total_bytes) * 100 : 0;
+        var fill = card.querySelector(".space-bar-fill");
+        if (fill) {
+          fill.style.width = pct.toFixed(1) + "%";
+          fill.className = "space-bar-fill";
+          if (pct > 90) fill.classList.add("danger");
+          else if (pct > 75) fill.classList.add("warning");
+        }
+
+        var spaceText = card.querySelector(".space-text");
+        if (spaceText) {
+          spaceText.innerHTML =
+            "<span>" + (drive.used_bytes / 1073741824).toFixed(1) + " GB used of " + (drive.total_bytes / 1073741824).toFixed(1) + " GB</span>" +
+            "<span>" + (drive.free_bytes / 1073741824).toFixed(1) + " GB free</span>";
+        }
+      });
+
+      pollFast = anySyncing;
+    }
+
+    function poll() {
+      fetch(apiUrl("/api/status"))
+        .then(function(r) { return r.json(); })
+        .then(updateDrives)
+        .catch(function() {})
+        .finally(function() {
+          setTimeout(poll, pollFast ? 3000 : 10000);
+        });
+    }
+
+    setTimeout(poll, 3000);
+  </script>
+
+</body>
+</html>
