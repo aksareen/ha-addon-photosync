@@ -138,7 +138,6 @@ def _run_sync_thread(drive_id, mount_path, label):
             job["speed"] = 0
             job["eta_seconds"] = None
 
-        print(f"[photosync] on_complete called: files={stats}, was_cancelling={was_cancelling}")
         if not was_cancelling:
             files = stats.get("files_transferred", 0)
             if files > 0:
@@ -147,11 +146,9 @@ def _run_sync_thread(drive_id, mount_path, label):
                        f"Safe to unplug.")
             else:
                 msg = f"'{label}' is up to date. No new files to sync."
-            print(f"[photosync] sending notification: {msg}")
             send_notification(msg, title="PhotoSync", notify_service=NOTIFY_SERVICE)
 
     def on_error(error_msg):
-        print(f"[photosync] on_error called: {error_msg}")
         with sync_lock:
             was_cancelling = job["status"] == "cancelling"
             if was_cancelling:
@@ -366,14 +363,6 @@ def create_folder(drive_id):
         return jsonify({"status": "created", "path": folder_path})
     except OSError as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/test-notify")
-def test_notify():
-    token = os.environ.get("SUPERVISOR_TOKEN", "")
-    print(f"[photosync] DEBUG token prefix: {token[:10]}... len={len(token)}")
-    send_notification("Test notification from PhotoSync", title="PhotoSync", notify_service=NOTIFY_SERVICE)
-    return jsonify({"status": "sent", "token_len": len(token), "token_prefix": token[:10]})
 
 
 if __name__ == "__main__":
