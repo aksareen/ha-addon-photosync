@@ -1,3 +1,5 @@
+import ctypes
+import ctypes.util
 import os
 import re
 import subprocess
@@ -77,6 +79,17 @@ def _sanitize_label(label):
     return s or "usb_drive"
 
 
+def _syscall_mount(source, target, fstype, options=""):
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    ret = libc.mount(
+        source.encode(), target.encode(), fstype.encode(),
+        0, options.encode() if options else None,
+    )
+    if ret != 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno))
+
+
 def mount_device(device):
     info = _run_blkid(device)
     fs_type = info.get("type")
@@ -89,27 +102,17 @@ def mount_device(device):
     mount_point = f"/media/{safe_label}"
     os.makedirs(mount_point, exist_ok=True)
 
-    # Try ntfs3 (kernel) with force flag first, fall back to ntfs-3g (FUSE)
-    if fs_type == "ntfs":
-        attempts = [
-            ["mount", "-t", "ntfs3", "-o", "force", device, mount_point],
-            ["mount", "-t", "ntfs-3g", device, mount_point],
-        ]
-    else:
-        attempts = [["mount", "-t", fs_type, device, mount_point]]
+    mount_fs = "ntfs3" if fs_type == "ntfs" else fs_type
+    mount_opts = "force" if fs_type == "ntfs" else ""
 
-    last_err = ""
-    for cmd in attempts:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            break
-        last_err = result.stderr.strip()
-    else:
+    try:
+        _syscall_mount(device, mount_point, mount_fs, mount_opts)
+    except OSError as e:
         try:
             os.rmdir(mount_point)
         except OSError:
             pass
-        raise RuntimeError(last_err)
+        raise RuntimeError(f"mount {device} as {mount_fs}: {e}")
 
     with _ejected_lock:
         _ejected_devices.discard(device)
