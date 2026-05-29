@@ -10,7 +10,8 @@ RUN apk add --no-cache \
     bash \
     curl \
     blkid \
-    util-linux
+    util-linux \
+    ntfs-3g
 
 COPY rootfs/ /
 COPY run.sh /

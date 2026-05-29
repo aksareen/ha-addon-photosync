@@ -85,23 +85,31 @@ def mount_device(device):
     if not fs_type:
         raise RuntimeError(f"Cannot identify filesystem on {device}")
 
-    # blkid reports "ntfs" but the kernel driver is "ntfs3"
-    mount_type = {"ntfs": "ntfs3"}.get(fs_type, fs_type)
-
     safe_label = _sanitize_label(label)
     mount_point = f"/media/{safe_label}"
     os.makedirs(mount_point, exist_ok=True)
 
-    result = subprocess.run(
-        ["mount", "-t", mount_type, device, mount_point],
-        capture_output=True, text=True, timeout=30,
-    )
-    if result.returncode != 0:
+    # Try ntfs3 (kernel) with force flag first, fall back to ntfs-3g (FUSE)
+    if fs_type == "ntfs":
+        attempts = [
+            ["mount", "-t", "ntfs3", "-o", "force", device, mount_point],
+            ["mount", "-t", "ntfs-3g", device, mount_point],
+        ]
+    else:
+        attempts = [["mount", "-t", fs_type, device, mount_point]]
+
+    last_err = ""
+    for cmd in attempts:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            break
+        last_err = result.stderr.strip()
+    else:
         try:
             os.rmdir(mount_point)
         except OSError:
             pass
-        raise RuntimeError(result.stderr.strip())
+        raise RuntimeError(last_err)
 
     with _ejected_lock:
         _ejected_devices.discard(device)
