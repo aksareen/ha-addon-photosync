@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -e
 
+# s6-overlay stores env vars as files — export SUPERVISOR_TOKEN for Python
+if [ -f /run/s6/container_environment/SUPERVISOR_TOKEN ]; then
+    SUPERVISOR_TOKEN=$(cat /run/s6/container_environment/SUPERVISOR_TOKEN)
+    export SUPERVISOR_TOKEN
+fi
+
 CONFIG_PATH="/data/options.json"
 
 koofr_email=$(jq -r '.koofr_email' "$CONFIG_PATH")
