@@ -368,5 +368,13 @@ def create_folder(drive_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/test-notify")
+def test_notify():
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    print(f"[photosync] DEBUG token prefix: {token[:10]}... len={len(token)}")
+    send_notification("Test notification from PhotoSync", title="PhotoSync", notify_service=NOTIFY_SERVICE)
+    return jsonify({"status": "sent", "token_len": len(token), "token_prefix": token[:10]})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8099)
