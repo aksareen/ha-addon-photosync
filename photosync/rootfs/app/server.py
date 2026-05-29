@@ -88,12 +88,6 @@ def _run_sync_thread(drive_id, mount_path, label):
         fresh["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         job.update(fresh)
 
-    send_notification(
-        f"Sync started for '{label}'",
-        title="PhotoSync",
-        notify_service=NOTIFY_SERVICE,
-    )
-
     def on_start(pid):
         with sync_lock:
             job["pid"] = pid
@@ -241,11 +235,6 @@ def _drive_watcher():
                 if not drive:
                     continue
 
-                send_notification(
-                    f"Drive '{drive_id}' detected — starting auto-sync",
-                    title="PhotoSync",
-                    notify_service=NOTIFY_SERVICE,
-                )
                 _start_sync_for_drive(drive_id)
 
         except Exception as e:
