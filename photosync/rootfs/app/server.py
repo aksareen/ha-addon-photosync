@@ -212,8 +212,11 @@ def _start_sync_for_drive(drive_id):
 def _drive_watcher():
     known = set()
     for d in get_drives(FOLDER_NAME):
+        if d["id"] in AUTO_SYNC_DRIVES:
+            print(f"[photosync] Drive '{d['id']}' already connected — syncing")
+            _start_sync_for_drive(d["id"])
         known.add(d["id"])
-    print(f"[photosync] Drive watcher: {len(known)} drive(s) already connected")
+    print(f"[photosync] Drive watcher: {len(known)} drive(s) connected")
 
     while True:
         time.sleep(10)
