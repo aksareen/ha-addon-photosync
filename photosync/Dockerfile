@@ -8,10 +8,7 @@ RUN apk add --no-cache \
     rclone \
     jq \
     bash \
-    curl \
-    blkid \
-    util-linux \
-    ntfs-3g
+    curl
 
 COPY rootfs/ /
 COPY run.sh /
