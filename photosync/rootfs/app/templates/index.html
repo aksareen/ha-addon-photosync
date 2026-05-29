@@ -68,6 +68,8 @@
       animation: scan-sweep 1.5s ease-in-out infinite; border-radius: 4px;
     }
     @keyframes scan-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+    .progress-bar-fill.verifying { animation: verify-pulse 1.5s ease-in-out infinite; }
+    @keyframes verify-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
     .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; font-size: 13px; margin-bottom: 14px; }
     .stat-row { display: flex; justify-content: space-between; align-items: baseline; }
     .stat-label { color: var(--text-muted); }
@@ -176,7 +178,7 @@
             <div class="stat-row"><span class="stat-label">Size</span><span class="stat-value stat-size"></span></div>
             <div class="stat-row"><span class="stat-label">Remaining</span><span class="stat-value stat-eta"></span></div>
             <div class="stat-row"><span class="stat-label">Elapsed</span><span class="stat-value stat-elapsed"></span></div>
-            <div class="stat-row"><span class="stat-label">Errors</span><span class="stat-value stat-errors"></span></div>
+            <div class="stat-row"><span class="stat-label stat-batch-label">Errors</span><span class="stat-value stat-batch-value"></span></div>
           </div>
           <div class="current-file"></div>
           <div class="sync-summary"></div>
@@ -242,6 +244,11 @@
     }
     function fmtEta(sec) { return (sec == null || sec <= 0) ? "--" : "~" + fmtDuration(sec); }
     function getCard(id) { return document.querySelector('.drive-card[data-id="' + id + '"]'); }
+
+    function batchSuffix(sync) {
+      if (sync.batch_total > 1) return " (batch " + sync.batch_current + "/" + sync.batch_total + ")";
+      return "";
+    }
 
     function ejectDrive(id) {
       if (!confirm("Flush writes and prepare for safe removal?")) return;
@@ -321,46 +328,108 @@
       var panel = card.querySelector(".sync-panel");
       if (status !== "idle") panel.classList.add("visible");
 
+      // Phase label
       var phaseLabel = card.querySelector(".phase-label");
       var phasePct = card.querySelector(".phase-pct");
-      if (status === "syncing" && phase === "scanning") { phaseLabel.textContent = "Scanning files..."; phasePct.textContent = ""; }
-      else if (status === "syncing" && phase === "transferring") { phaseLabel.textContent = "Copying " + sync.total_files + " items..."; phasePct.textContent = sync.percent + "%"; }
-      else if (status === "paused") { phaseLabel.innerHTML = "Paused <span class='badge badge-paused'>PAUSED</span>"; phasePct.textContent = sync.percent + "%"; }
-      else if (status === "cancelling") { phaseLabel.textContent = "Cancelling..."; phasePct.textContent = ""; }
-      else if (status === "complete") { phaseLabel.innerHTML = "Sync complete <span class='badge badge-complete'>DONE</span>"; phasePct.textContent = "100%"; }
-      else if (status === "failed") { phaseLabel.innerHTML = "Sync failed <span class='badge badge-failed'>ERROR</span>"; phasePct.textContent = ""; }
-      else if (status === "cancelled") { phaseLabel.innerHTML = "Sync cancelled <span class='badge badge-cancelled'>CANCELLED</span>"; phasePct.textContent = sync.percent + "%"; }
+      if (status === "syncing" && phase === "scanning") {
+        phaseLabel.textContent = "Scanning files...";
+        phasePct.textContent = "";
+      } else if (status === "syncing" && phase === "downloading") {
+        phaseLabel.textContent = "Downloading" + batchSuffix(sync) + "...";
+        phasePct.textContent = sync.percent + "%";
+      } else if (status === "syncing" && phase === "verifying") {
+        phaseLabel.textContent = "Verifying checksums" + batchSuffix(sync) + "...";
+        phasePct.textContent = sync.percent + "%";
+      } else if (status === "syncing" && phase === "copying") {
+        phaseLabel.textContent = "Copying to drive" + batchSuffix(sync) + "...";
+        phasePct.textContent = sync.percent + "%";
+      } else if (status === "paused") {
+        phaseLabel.innerHTML = "Paused <span class='badge badge-paused'>PAUSED</span>";
+        phasePct.textContent = sync.percent + "%";
+      } else if (status === "cancelling") {
+        phaseLabel.textContent = "Cancelling...";
+        phasePct.textContent = "";
+      } else if (status === "complete") {
+        phaseLabel.innerHTML = "Sync complete <span class='badge badge-complete'>DONE</span>";
+        phasePct.textContent = "100%";
+      } else if (status === "failed") {
+        phaseLabel.innerHTML = "Sync failed <span class='badge badge-failed'>ERROR</span>";
+        phasePct.textContent = "";
+      } else if (status === "cancelled") {
+        phaseLabel.innerHTML = "Sync cancelled <span class='badge badge-cancelled'>CANCELLED</span>";
+        phasePct.textContent = sync.percent + "%";
+      }
 
+      // Progress bar
       var fill = card.querySelector(".progress-bar-fill");
       fill.className = "progress-bar-fill";
-      if (status === "syncing" && phase === "scanning") { fill.classList.add("scanning"); fill.style.width = "100%"; }
-      else { fill.style.width = (isDone && status === "complete" ? 100 : sync.percent) + "%";
+      if (status === "syncing" && phase === "scanning") {
+        fill.classList.add("scanning"); fill.style.width = "100%";
+      } else if (status === "syncing" && phase === "verifying") {
+        fill.classList.add("verifying"); fill.style.width = sync.percent + "%";
+      } else {
+        fill.style.width = (isDone && status === "complete" ? 100 : sync.percent) + "%";
         if (status === "paused") fill.classList.add("paused");
         else if (status === "complete") fill.classList.add("complete");
         else if (status === "failed") fill.classList.add("failed");
       }
 
+      // Stats grid
       var statsGrid = card.querySelector(".stats-grid");
       statsGrid.style.display = (isActive || isDone) ? "" : "none";
       if (isActive || isDone) {
-        card.querySelector(".stat-items").textContent = (phase === "scanning" && !isDone) ? "Checked " + sync.checking + " files" : sync.files_transferred + " of " + sync.total_files;
-        card.querySelector(".stat-speed").textContent = isActive ? fmtSpeed(sync.speed) : "--";
+        var itemsText;
+        if (phase === "scanning" && !isDone) {
+          itemsText = "Scanning...";
+        } else {
+          itemsText = sync.files_transferred + " of " + sync.total_files;
+        }
+        card.querySelector(".stat-items").textContent = itemsText;
+        card.querySelector(".stat-speed").textContent = (isActive && phase === "downloading") ? fmtSpeed(sync.speed) : "--";
         card.querySelector(".stat-size").textContent = (phase === "scanning" && !isDone) ? "--" : fmtBytes(sync.bytes_transferred) + " / " + fmtBytes(sync.total_bytes);
-        card.querySelector(".stat-eta").textContent = isActive ? fmtEta(sync.eta_seconds) : "--";
+        card.querySelector(".stat-eta").textContent = (isActive && phase === "downloading") ? fmtEta(sync.eta_seconds) : "--";
         card.querySelector(".stat-elapsed").textContent = fmtDuration(sync.elapsed_seconds);
-        card.querySelector(".stat-errors").textContent = sync.errors_count;
-        card.querySelector(".stat-errors").style.color = sync.errors_count > 0 ? "var(--red)" : "";
+
+        // Last row: show batch info if multi-batch, otherwise errors
+        var batchLabel = card.querySelector(".stat-batch-label");
+        var batchValue = card.querySelector(".stat-batch-value");
+        if (sync.batch_total > 1) {
+          batchLabel.textContent = "Batch";
+          batchValue.textContent = sync.batch_current + " / " + sync.batch_total;
+          batchValue.style.color = "";
+        } else {
+          batchLabel.textContent = "Errors";
+          batchValue.textContent = sync.errors_count;
+          batchValue.style.color = sync.errors_count > 0 ? "var(--red)" : "";
+        }
       }
 
+      // Current file
       var cfEl = card.querySelector(".current-file");
-      if (sync.current_file && isActive) { cfEl.textContent = "→ " + sync.current_file; cfEl.classList.add("visible"); } else { cfEl.classList.remove("visible"); }
+      if (sync.current_file && isActive) {
+        cfEl.textContent = "→ " + sync.current_file;
+        cfEl.classList.add("visible");
+      } else {
+        cfEl.classList.remove("visible");
+      }
 
+      // Summary
       var summaryEl = card.querySelector(".sync-summary");
-      if (status === "complete") { summaryEl.textContent = "Completed " + sync.completed_at + " · " + sync.files_transferred + " files, " + fmtBytes(sync.bytes_transferred); summaryEl.style.display = ""; summaryEl.style.color = ""; }
-      else if (status === "failed" && sync.error) { summaryEl.textContent = sync.error; summaryEl.style.color = "var(--red)"; summaryEl.style.display = ""; }
-      else if (status === "cancelled") { summaryEl.textContent = sync.files_transferred + " of " + sync.total_files + " files copied before cancellation"; summaryEl.style.display = ""; summaryEl.style.color = ""; }
-      else { summaryEl.style.display = "none"; }
+      if (status === "complete") {
+        var summaryText = "Completed " + sync.completed_at + " · " + sync.files_transferred + " files, " + fmtBytes(sync.bytes_transferred);
+        if (sync.files_transferred > 0) summaryText += " · checksums verified";
+        summaryEl.textContent = summaryText;
+        summaryEl.style.display = ""; summaryEl.style.color = "";
+      } else if (status === "failed" && sync.error) {
+        summaryEl.textContent = sync.error; summaryEl.style.color = "var(--red)"; summaryEl.style.display = "";
+      } else if (status === "cancelled") {
+        summaryEl.textContent = sync.files_transferred + " of " + sync.total_files + " files copied before cancellation";
+        summaryEl.style.display = ""; summaryEl.style.color = "";
+      } else {
+        summaryEl.style.display = "none";
+      }
 
+      // Buttons
       var btnSync = card.querySelector(".btn-sync");
       var btnPause = card.querySelector(".btn-pause");
       var btnResume = card.querySelector(".btn-resume-btn");
@@ -370,7 +439,7 @@
       btnSync.style.display = isActive ? "none" : "";
       btnSync.disabled = !drive.has_sync_folder || isActive;
       btnSync.textContent = (status === "failed" || status === "cancelled") ? "Retry" : "Sync Now";
-      btnPause.style.display = (status === "syncing") ? "" : "none";
+      btnPause.style.display = (status === "syncing" && phase === "downloading") ? "" : "none";
       btnResume.style.display = (status === "paused") ? "" : "none";
       btnCancel.style.display = (status === "syncing" || status === "paused") ? "" : "none";
       btnEject.style.display = isActive ? "none" : "";
@@ -387,10 +456,12 @@
         (drive.total_bytes / 1073741824).toFixed(1) + " GB</span><span>" +
         (drive.free_bytes / 1073741824).toFixed(1) + " GB free</span>";
 
+      // Folder status
       var folderEl = card.querySelector(".folder-status");
       if (drive.has_sync_folder) { folderEl.className = "folder-status exists"; folderEl.innerHTML = "&#10003; PhotoSync folder exists"; }
       else { folderEl.className = "folder-status missing"; folderEl.innerHTML = "&#9888; No PhotoSync folder"; }
 
+      // Log
       var logSection = card.querySelector(".log-section");
       var logArea = document.getElementById("log-" + drive.id);
       if (sync.progress_lines && sync.progress_lines.length > 0) {

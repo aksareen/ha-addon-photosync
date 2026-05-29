@@ -21,13 +21,14 @@ Go to the **Configuration** tab of this add-on and fill in:
 - **remote_path**: The folder path in Koofr to sync from (default: `/PhotoSync`). This should match where your phone uploads photos.
 - **folder_name**: The folder name to create on each USB drive (default: `PhotoSync`)
 - **notify_service**: (Optional) A Home Assistant notify entity for push notifications, e.g. `notify.mobile_app_my_iphone`. Leave empty to disable notifications.
+- **batch_size_mb**: Maximum staging batch size in MB (default: 5000). Photos are downloaded to the internal SSD first, verified, then copied to the USB drive in batches of this size. Increase if you have plenty of SSD space; decrease if space is tight.
 - **exclude_patterns**: File patterns to skip. The defaults exclude macOS/Windows junk files (`.DS_Store`, `Thumbs.db`, etc.). Add patterns if needed.
 
 Click **Save** after making changes, then restart the add-on.
 
 ### Step 3: Prepare a USB drive
 
-1. Format your USB drive (ext4, exFAT, or NTFS all work)
+1. Format your USB drive as **exFAT** or **ext4** (recommended; NTFS is not reliably supported on HA OS)
 2. Plug it into your Home Assistant machine
 3. HA auto-mounts it under `/media/<drive-label>/`
 
@@ -39,15 +40,25 @@ Open **PhotoSync** from the Home Assistant sidebar (camera icon).
 
 The UI shows:
 - **Connected drives**: All drives detected under `/media/` with their labels and mount status
-- **Sync Now button**: Triggers a sync from Koofr to the selected drive(s)
-- **Sync status**: Progress indicator while sync is running
+- **Storage bar**: Used/free space on each drive
+- **Sync Now button**: Triggers a sync from Koofr to the selected drive
+- **Live progress**: Download speed, file count, batch progress, and current phase
+- **Eject button**: Flushes writes so you can safely unplug the drive
 
-To sync:
-1. Make sure your USB drive is plugged in and appears in the list
-2. Click **Sync Now**
-3. Wait for the sync to complete -- photos are copied directly from Koofr to the drive
+## How Sync Works
 
-You can sync to multiple drives. Each sync runs in parallel.
+Syncing uses a staged approach for data integrity:
+
+1. **Scan**: Lists all files on Koofr and compares against the USB drive to find what's new or changed
+2. **Download**: Downloads a batch of files to the internal SSD staging area (`/share/photosync-staging/`)
+3. **Verify download**: Checks downloaded files against Koofr using checksums
+4. **Copy to drive**: Copies verified files from SSD staging to the USB drive
+5. **Verify copy**: Checks USB drive files against staging using MD5 checksums
+6. **Repeat**: If there are more files than fit in one batch, repeats steps 2-5
+
+Large syncs are automatically split into batches (configurable via `batch_size_mb`). Daily photo syncs (5-30 photos) typically fit in a single batch.
+
+The staging area is always cleaned up, even if the sync fails or is cancelled.
 
 ## Folder Structure
 
@@ -81,7 +92,7 @@ If `notify_service` is configured, you will receive push notifications when:
 
 - Make sure the drive is plugged in and recognized by HA. Check **Settings > System > Hardware**.
 - The drive must be mounted under `/media/`. HA OS auto-mounts USB drives, but if it does not appear, try unplugging and re-plugging.
-- Some drive formats may not be supported. ext4 and exFAT are the most reliable with HA OS.
+- **exFAT and ext4** are the supported formats. NTFS is not reliably supported on HA OS.
 
 ### Sync fails immediately
 

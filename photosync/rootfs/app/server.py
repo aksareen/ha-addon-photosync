@@ -6,7 +6,10 @@ import time
 from flask import Flask, jsonify, render_template, request
 
 from detect import get_drives, safe_eject
-from sync import cancel_sync, pause_sync, resume_sync, run_sync, send_notification
+from sync import (
+    cancel_sync, clean_staging, pause_sync, resume_sync, run_sync,
+    send_notification,
+)
 
 app = Flask(__name__)
 
@@ -18,12 +21,17 @@ with open(OPTIONS_PATH) as f:
 FOLDER_NAME = options.get("folder_name", "PhotoSync")
 REMOTE_PATH = options.get("remote_path", "/PhotoSync")
 NOTIFY_SERVICE = options.get("notify_service", "")
+BATCH_SIZE_MB = options.get("batch_size_mb", 5000)
 EXCLUDE_PATTERNS = options.get("exclude_patterns", [])
 
 MAX_LOG_LINES = 200
 
 sync_jobs = {}
 sync_lock = threading.Lock()
+cancel_events = {}
+
+clean_staging()
+print("[photosync] startup: cleaned staging area")
 
 
 def _fresh_job():
@@ -46,6 +54,8 @@ def _fresh_job():
         "errors_count": 0,
         "checking": 0,
         "total_checks": 0,
+        "batch_current": 0,
+        "batch_total": 0,
         "progress_lines": [],
     }
 
@@ -74,8 +84,10 @@ def _drive_with_sync(drive):
 
 def _run_sync_thread(drive_id, mount_path, label):
     job = _get_job(drive_id)
+    cancel_event = threading.Event()
 
     with sync_lock:
+        cancel_events[drive_id] = cancel_event
         fresh = _fresh_job()
         fresh["status"] = "syncing"
         fresh["phase"] = "scanning"
@@ -114,15 +126,14 @@ def _run_sync_thread(drive_id, mount_path, label):
             job["errors_count"] = stats["errors_count"]
             job["checking"] = stats["checking"]
             job["total_checks"] = stats.get("total_checks", 0)
+            job["batch_current"] = stats.get("batch_current", 0)
+            job["batch_total"] = stats.get("batch_total", 0)
 
             total = stats["total_bytes"]
             done = stats["bytes_transferred"]
             job["percent"] = round((done / total) * 100, 1) if total > 0 else 0
 
-            if stats["total_files"] > 0:
-                job["phase"] = "transferring"
-            elif stats["checking"] > 0:
-                job["phase"] = "scanning"
+            job["phase"] = stats.get("phase", job["phase"])
 
     def on_complete(stats):
         with sync_lock:
@@ -142,12 +153,14 @@ def _run_sync_thread(drive_id, mount_path, label):
             job["eta_seconds"] = None
 
         if not was_cancelling:
-            send_notification(
-                f"Sync complete for '{label}': "
-                f"{stats.get('files_transferred', 0)} files copied. Safe to unplug.",
-                title="PhotoSync",
-                notify_service=NOTIFY_SERVICE,
-            )
+            files = stats.get("files_transferred", 0)
+            if files > 0:
+                msg = (f"Sync complete for '{label}': "
+                       f"{files} files copied, all checksums verified. "
+                       f"Safe to unplug.")
+            else:
+                msg = f"'{label}' is up to date. No new files to sync."
+            send_notification(msg, title="PhotoSync", notify_service=NOTIFY_SERVICE)
 
     def on_error(error_msg):
         with sync_lock:
@@ -177,6 +190,8 @@ def _run_sync_thread(drive_id, mount_path, label):
         folder_name=FOLDER_NAME,
         remote_path=REMOTE_PATH,
         exclude_patterns=EXCLUDE_PATTERNS,
+        batch_size_mb=BATCH_SIZE_MB,
+        cancel_event=cancel_event,
         on_start=on_start,
         on_progress=on_progress,
         on_stats=on_stats,
@@ -250,7 +265,7 @@ def api_pause(drive_id):
             return jsonify({"error": "Not syncing"}), 400
         pid = job.get("pid")
         if not pid:
-            return jsonify({"error": "No process"}), 400
+            return jsonify({"error": "No process to pause"}), 400
         if pause_sync(pid):
             job["status"] = "paused"
             return jsonify({"status": "paused"})
@@ -278,15 +293,18 @@ def api_cancel(drive_id):
     with sync_lock:
         if job["status"] not in ("syncing", "paused"):
             return jsonify({"error": "Not syncing"}), 400
-        pid = job.get("pid")
-        if not pid:
-            return jsonify({"error": "No process"}), 400
         job["status"] = "cancelling"
-        if job.get("pid"):
-            resume_sync(pid)
-        if cancel_sync(pid):
-            return jsonify({"status": "cancelling"})
-        return jsonify({"error": "Failed to cancel"}), 500
+        pid = job.get("pid")
+
+    cancel_event = cancel_events.get(drive_id)
+    if cancel_event:
+        cancel_event.set()
+
+    if pid:
+        resume_sync(pid)
+        cancel_sync(pid)
+
+    return jsonify({"status": "cancelling"})
 
 
 @app.route("/api/create-folder/<drive_id>", methods=["POST"])

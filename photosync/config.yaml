@@ -1,5 +1,5 @@
 name: PhotoSync
-version: "0.4.1"
+version: "0.5.0"
 slug: photosync
 description: Sync photos from Koofr cloud to USB drives
 url: https://github.com/aksareen/ha-addon-photosync
@@ -23,6 +23,7 @@ options:
   remote_path: "/PhotoSync"
   folder_name: "PhotoSync"
   notify_service: ""
+  batch_size_mb: 5000
   exclude_patterns:
     - ".DS_Store"
     - "Thumbs.db"
@@ -36,5 +37,6 @@ schema:
   remote_path: "str"
   folder_name: "str"
   notify_service: "str?"
+  batch_size_mb: "int?"
   exclude_patterns:
     - "str"
