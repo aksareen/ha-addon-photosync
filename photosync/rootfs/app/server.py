@@ -277,11 +277,6 @@ def api_eject(drive_id):
             return jsonify({"error": "Sync in progress — cancel first"}), 409
 
     safe_eject(drive["mount_path"])
-    send_notification(
-        f"Drive '{drive['label']}' writes flushed. Safe to unplug.",
-        title="PhotoSync",
-        notify_service=NOTIFY_SERVICE,
-    )
     return jsonify({"status": "ejected"})
 
 
