@@ -105,6 +105,8 @@ def run_sync(drive_label, mount_path, folder_name, remote_path, exclude_patterns
 
         last_stats = {}
         start_time = time.time()
+        latched_total_files = None
+        latched_total_bytes = None
         rc_ok = _wait_for_rc(rc_port, proc)
 
         if rc_ok:
@@ -117,16 +119,19 @@ def run_sync(drive_label, mount_path, folder_name, remote_path, exclude_patterns
                     xferring = raw.get("transferring") or []
                     current = xferring[0].get("name", "") if xferring else ""
                     phase = "scanning"
-                    if raw.get("totalTransfers", 0) > 0:
+                    if raw.get("transfers", 0) > 0 or raw.get("totalTransfers", 0) > 0:
                         phase = "downloading"
+                        if latched_total_files is None:
+                            latched_total_files = raw.get("totalTransfers", 0)
+                            latched_total_bytes = raw.get("totalBytes", 0)
                     elif raw.get("checks", 0) > 0:
                         phase = "scanning"
                     last_stats = {
                         "phase": phase,
                         "bytes_transferred": raw.get("bytes", 0),
-                        "total_bytes": raw.get("totalBytes", 0),
+                        "total_bytes": latched_total_bytes or raw.get("totalBytes", 0),
                         "files_transferred": raw.get("transfers", 0),
-                        "total_files": raw.get("totalTransfers", 0),
+                        "total_files": latched_total_files or raw.get("totalTransfers", 0),
                         "speed": raw.get("speed", 0),
                         "eta_seconds": raw.get("eta"),
                         "elapsed_seconds": time.time() - start_time,
