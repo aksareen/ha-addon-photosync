@@ -5,7 +5,7 @@ import socket
 import subprocess
 import threading
 import time
-import urllib.request
+import urllib.request  # used by rclone RC API calls
 
 RCLONE_CONFIG = "/data/rclone.conf"
 
@@ -215,29 +215,35 @@ def cancel_sync(pid):
 
 def send_notification(message, title="PhotoSync", notify_service=None):
     token = os.environ.get("SUPERVISOR_TOKEN", "")
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    _post_ha_service(
+    _call_ha_service(
         "persistent_notification/create",
         {"message": message, "title": title},
-        headers,
+        token,
     )
     if notify_service:
-        _post_ha_service(
+        _call_ha_service(
             "notify/send_message",
             {"message": message, "title": title, "entity_id": notify_service},
-            headers,
+            token,
         )
 
 
-def _post_ha_service(service_path, payload, headers):
+def _call_ha_service(service_path, payload, token):
     url = f"http://supervisor/core/api/services/{service_path}"
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            print(f"[photosync] notified: {service_path} ({resp.status})")
+        result = subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+             "-X", "POST",
+             "-H", f"Authorization: Bearer {token}",
+             "-H", "Content-Type: application/json",
+             "-d", json.dumps(payload),
+             url],
+            capture_output=True, text=True, timeout=15,
+        )
+        code = result.stdout.strip()
+        if code == "200":
+            print(f"[photosync] notified: {service_path} ({code})")
+        else:
+            print(f"[photosync] notify failed: {service_path} (HTTP {code})")
     except Exception as e:
         print(f"[photosync] notify failed: {service_path} ({e})")
