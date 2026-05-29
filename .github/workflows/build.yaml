@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - "photosync/**"
+      - ".github/workflows/**"
 
 env:
   ADDON: photosync
