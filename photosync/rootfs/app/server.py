@@ -7,8 +7,7 @@ from flask import Flask, jsonify, render_template, request
 
 from detect import get_drives, safe_eject
 from sync import (
-    cancel_sync, clean_staging, pause_sync, resume_sync, run_sync,
-    send_notification,
+    cancel_sync, pause_sync, resume_sync, run_sync, send_notification,
 )
 
 app = Flask(__name__)
@@ -21,7 +20,7 @@ with open(OPTIONS_PATH) as f:
 FOLDER_NAME = options.get("folder_name", "PhotoSync")
 REMOTE_PATH = options.get("remote_path", "/PhotoSync")
 NOTIFY_SERVICE = options.get("notify_service", "")
-BATCH_SIZE_MB = options.get("batch_size_mb", 5000)
+AUTO_SYNC_DRIVES = options.get("auto_sync_drives", [])
 EXCLUDE_PATTERNS = options.get("exclude_patterns", [])
 
 MAX_LOG_LINES = 200
@@ -29,9 +28,6 @@ MAX_LOG_LINES = 200
 sync_jobs = {}
 sync_lock = threading.Lock()
 cancel_events = {}
-
-clean_staging()
-print("[photosync] startup: cleaned staging area")
 
 
 def _fresh_job():
@@ -54,8 +50,6 @@ def _fresh_job():
         "errors_count": 0,
         "checking": 0,
         "total_checks": 0,
-        "batch_current": 0,
-        "batch_total": 0,
         "progress_lines": [],
     }
 
@@ -126,8 +120,6 @@ def _run_sync_thread(drive_id, mount_path, label):
             job["errors_count"] = stats["errors_count"]
             job["checking"] = stats["checking"]
             job["total_checks"] = stats.get("total_checks", 0)
-            job["batch_current"] = stats.get("batch_current", 0)
-            job["batch_total"] = stats.get("batch_total", 0)
 
             total = stats["total_bytes"]
             done = stats["bytes_transferred"]
@@ -156,7 +148,7 @@ def _run_sync_thread(drive_id, mount_path, label):
             files = stats.get("files_transferred", 0)
             if files > 0:
                 msg = (f"Sync complete for '{label}': "
-                       f"{files} files copied, all checksums verified. "
+                       f"{files} files copied, all verified. "
                        f"Safe to unplug.")
             else:
                 msg = f"'{label}' is up to date. No new files to sync."
@@ -190,7 +182,6 @@ def _run_sync_thread(drive_id, mount_path, label):
         folder_name=FOLDER_NAME,
         remote_path=REMOTE_PATH,
         exclude_patterns=EXCLUDE_PATTERNS,
-        batch_size_mb=BATCH_SIZE_MB,
         cancel_event=cancel_event,
         on_start=on_start,
         on_progress=on_progress,
@@ -198,6 +189,73 @@ def _run_sync_thread(drive_id, mount_path, label):
         on_complete=on_complete,
         on_error=on_error,
     )
+
+
+def _start_sync_for_drive(drive_id):
+    drive = _find_drive(drive_id)
+    if not drive:
+        return False
+
+    folder_path = os.path.join(drive["mount_path"], FOLDER_NAME)
+    os.makedirs(folder_path, exist_ok=True)
+
+    job = _get_job(drive_id)
+    with sync_lock:
+        if job["status"] in ("syncing", "paused", "cancelling"):
+            return False
+
+    thread = threading.Thread(
+        target=_run_sync_thread,
+        args=(drive_id, drive["mount_path"], drive["label"]),
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+# ── Drive watcher (auto-sync) ──
+
+def _drive_watcher():
+    known = set()
+    for d in get_drives(FOLDER_NAME):
+        known.add(d["id"])
+    print(f"[photosync] Drive watcher: {len(known)} drive(s) already connected")
+
+    while True:
+        time.sleep(10)
+        try:
+            current_drives = get_drives(FOLDER_NAME)
+            current_ids = {d["id"] for d in current_drives}
+            new_ids = current_ids - known
+            known = current_ids
+
+            for drive_id in new_ids:
+                if drive_id not in AUTO_SYNC_DRIVES:
+                    print(f"[photosync] Drive '{drive_id}' mounted (not in auto-sync list)")
+                    continue
+
+                print(f"[photosync] Auto-sync drive '{drive_id}' detected, waiting 10s...")
+                time.sleep(10)
+
+                drive = _find_drive(drive_id)
+                if not drive:
+                    continue
+
+                send_notification(
+                    f"Drive '{drive_id}' detected — starting auto-sync",
+                    title="PhotoSync",
+                    notify_service=NOTIFY_SERVICE,
+                )
+                _start_sync_for_drive(drive_id)
+
+        except Exception as e:
+            print(f"[photosync] Drive watcher error: {e}")
+
+
+if AUTO_SYNC_DRIVES:
+    watcher_thread = threading.Thread(target=_drive_watcher, daemon=True)
+    watcher_thread.start()
+    print(f"[photosync] Drive watcher started for: {AUTO_SYNC_DRIVES}")
 
 
 # ── Routes ──
@@ -248,12 +306,7 @@ def trigger_sync(drive_id):
         if job["status"] in ("syncing", "paused", "cancelling"):
             return jsonify({"error": "Sync already in progress"}), 409
 
-    thread = threading.Thread(
-        target=_run_sync_thread,
-        args=(drive_id, drive["mount_path"], drive["label"]),
-        daemon=True,
-    )
-    thread.start()
+    _start_sync_for_drive(drive_id)
     return jsonify({"status": "started"})
 
 

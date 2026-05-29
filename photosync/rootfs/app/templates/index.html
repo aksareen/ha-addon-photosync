@@ -179,7 +179,7 @@
             <div class="stat-row"><span class="stat-label">Size</span><span class="stat-value stat-size"></span></div>
             <div class="stat-row"><span class="stat-label">Remaining</span><span class="stat-value stat-eta"></span></div>
             <div class="stat-row"><span class="stat-label">Elapsed</span><span class="stat-value stat-elapsed"></span></div>
-            <div class="stat-row"><span class="stat-label stat-batch-label">Errors</span><span class="stat-value stat-batch-value"></span></div>
+            <div class="stat-row"><span class="stat-label">Errors</span><span class="stat-value stat-errors"></span></div>
           </div>
           <div class="current-file"></div>
           <div class="sync-summary"></div>
@@ -245,11 +245,6 @@
     }
     function fmtEta(sec) { return (sec == null || sec <= 0) ? "--" : "~" + fmtDuration(sec); }
     function getCard(id) { return document.querySelector('.drive-card[data-id="' + id + '"]'); }
-
-    function batchSuffix(sync) {
-      if (sync.batch_total > 1) return " (batch " + sync.batch_current + "/" + sync.batch_total + ")";
-      return "";
-    }
 
     function ejectDrive(id) {
       if (!confirm("Flush writes and prepare for safe removal?")) return;
@@ -329,20 +324,16 @@
       var panel = card.querySelector(".sync-panel");
       if (status !== "idle") panel.classList.add("visible");
 
-      // Phase label
       var phaseLabel = card.querySelector(".phase-label");
       var phasePct = card.querySelector(".phase-pct");
       if (status === "syncing" && phase === "scanning") {
         phaseLabel.textContent = "Scanning files...";
         phasePct.textContent = "";
       } else if (status === "syncing" && phase === "downloading") {
-        phaseLabel.textContent = "Downloading" + batchSuffix(sync) + "...";
+        phaseLabel.textContent = "Downloading...";
         phasePct.textContent = sync.percent + "%";
       } else if (status === "syncing" && phase === "verifying") {
-        phaseLabel.textContent = "Verifying checksums" + batchSuffix(sync) + "...";
-        phasePct.textContent = sync.percent + "%";
-      } else if (status === "syncing" && phase === "copying") {
-        phaseLabel.textContent = "Copying to drive" + batchSuffix(sync) + "...";
+        phaseLabel.textContent = "Verifying...";
         phasePct.textContent = sync.percent + "%";
       } else if (status === "paused") {
         phaseLabel.innerHTML = "Paused <span class='badge badge-paused'>PAUSED</span>";
@@ -361,7 +352,6 @@
         phasePct.textContent = sync.percent + "%";
       }
 
-      // Progress bar
       var fill = card.querySelector(".progress-bar-fill");
       fill.className = "progress-bar-fill";
       if (status === "syncing" && phase === "scanning") {
@@ -375,37 +365,19 @@
         else if (status === "failed") fill.classList.add("failed");
       }
 
-      // Stats grid
       var statsGrid = card.querySelector(".stats-grid");
       statsGrid.style.display = (isActive || isDone) ? "" : "none";
       if (isActive || isDone) {
-        var itemsText;
-        if (phase === "scanning" && !isDone) {
-          itemsText = "Scanning...";
-        } else {
-          itemsText = sync.files_transferred + " of " + sync.total_files;
-        }
+        var itemsText = (phase === "scanning" && !isDone) ? "Scanning..." : sync.files_transferred + " of " + sync.total_files;
         card.querySelector(".stat-items").textContent = itemsText;
         card.querySelector(".stat-speed").textContent = (isActive && phase === "downloading") ? fmtSpeed(sync.speed) : "--";
         card.querySelector(".stat-size").textContent = (phase === "scanning" && !isDone) ? "--" : fmtBytes(sync.bytes_transferred) + " / " + fmtBytes(sync.total_bytes);
         card.querySelector(".stat-eta").textContent = (isActive && phase === "downloading") ? fmtEta(sync.eta_seconds) : "--";
         card.querySelector(".stat-elapsed").textContent = fmtDuration(sync.elapsed_seconds);
-
-        // Last row: show batch info if multi-batch, otherwise errors
-        var batchLabel = card.querySelector(".stat-batch-label");
-        var batchValue = card.querySelector(".stat-batch-value");
-        if (sync.batch_total > 1) {
-          batchLabel.textContent = "Batch";
-          batchValue.textContent = sync.batch_current + " / " + sync.batch_total;
-          batchValue.style.color = "";
-        } else {
-          batchLabel.textContent = "Errors";
-          batchValue.textContent = sync.errors_count;
-          batchValue.style.color = sync.errors_count > 0 ? "var(--red)" : "";
-        }
+        card.querySelector(".stat-errors").textContent = sync.errors_count;
+        card.querySelector(".stat-errors").style.color = sync.errors_count > 0 ? "var(--red)" : "";
       }
 
-      // Current file
       var cfEl = card.querySelector(".current-file");
       if (sync.current_file && isActive) {
         cfEl.textContent = "→ " + sync.current_file;
@@ -414,11 +386,10 @@
         cfEl.classList.remove("visible");
       }
 
-      // Summary
       var summaryEl = card.querySelector(".sync-summary");
       if (status === "complete") {
         var summaryText = "Completed " + sync.completed_at + " · " + sync.files_transferred + " files, " + fmtBytes(sync.bytes_transferred);
-        if (sync.files_transferred > 0) summaryText += " · checksums verified";
+        if (sync.files_transferred > 0) summaryText += " · verified";
         summaryEl.textContent = summaryText;
         summaryEl.style.display = ""; summaryEl.style.color = "";
       } else if (status === "failed" && sync.error) {
@@ -430,7 +401,6 @@
         summaryEl.style.display = "none";
       }
 
-      // Buttons
       var btnSync = card.querySelector(".btn-sync");
       var btnPause = card.querySelector(".btn-pause");
       var btnResume = card.querySelector(".btn-resume-btn");
@@ -445,7 +415,6 @@
       btnCancel.style.display = (status === "syncing" || status === "paused") ? "" : "none";
       btnEject.style.display = isActive ? "none" : "";
 
-      // Storage bar
       var pct = drive.total_bytes > 0 ? (drive.used_bytes / drive.total_bytes) * 100 : 0;
       var sfill = card.querySelector(".space-bar-fill");
       sfill.style.width = pct.toFixed(1) + "%";
@@ -457,12 +426,10 @@
         (drive.total_bytes / 1073741824).toFixed(1) + " GB</span><span>" +
         (drive.free_bytes / 1073741824).toFixed(1) + " GB free</span>";
 
-      // Folder status
       var folderEl = card.querySelector(".folder-status");
       if (drive.has_sync_folder) { folderEl.className = "folder-status exists"; folderEl.innerHTML = "&#10003; PhotoSync folder exists"; }
       else { folderEl.className = "folder-status missing"; folderEl.innerHTML = "&#9888; No PhotoSync folder"; }
 
-      // Log
       var logSection = card.querySelector(".log-section");
       var logArea = document.getElementById("log-" + drive.id);
       if (sync.progress_lines && sync.progress_lines.length > 0) {
