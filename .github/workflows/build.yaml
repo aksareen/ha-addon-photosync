@@ -53,7 +53,7 @@ jobs:
       - name: Get base image
         id: base
         run: |
-          base=$(grep '${{ matrix.arch }}:' ${{ env.ADDON }}/build.yaml | sed 's/.*: *//')
+          base=$(grep '${{ matrix.arch }}:' ${{ env.ADDON }}/build.yaml | awk '{print $2}')
           echo "image=$base" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
