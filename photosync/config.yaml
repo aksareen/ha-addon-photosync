@@ -1,5 +1,5 @@
 name: PhotoSync
-version: "0.6.2"
+version: "0.6.3"
 slug: photosync
 description: Sync photos from Koofr cloud to USB drives
 url: https://github.com/aksareen/ha-addon-photosync

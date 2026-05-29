@@ -25,4 +25,4 @@ echo "[photosync] rclone config generated"
 echo "[photosync] remote_path=${remote_path} folder_name=${folder_name}"
 echo "[photosync] starting web server on port 8099"
 
-exec python3 /app/server.py
+exec python3 -u /app/server.py
