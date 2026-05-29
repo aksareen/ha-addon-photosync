@@ -12,10 +12,11 @@ obscured_password=$(rclone obscure "$koofr_password")
 
 cat > /data/rclone.conf <<EOF
 [koofr]
-type = koofr
-provider = koofr
-email = ${koofr_email}
-password = ${obscured_password}
+type = webdav
+url = https://app.koofr.net/dav/Koofr
+vendor = other
+user = ${koofr_email}
+pass = ${obscured_password}
 EOF
 
 export RCLONE_CONFIG="/data/rclone.conf"

@@ -126,9 +126,11 @@ def _md5sum(filepath):
 
 
 def _verify_staging_vs_remote(remote_path, staging_dir, files_from_path):
+    # WebDAV doesn't expose remote hashes; size-only catches truncated downloads.
+    # Local MD5 (staging vs HDD) provides the full integrity check.
     cmd = [
         "rclone", "check", staging_dir + "/", f"koofr:{remote_path}/",
-        "--one-way", "--checksum",
+        "--one-way", "--size-only",
         "--config", RCLONE_CONFIG,
         "--files-from", files_from_path,
     ]
