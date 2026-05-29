@@ -451,13 +451,11 @@ def send_notification(message, title="PhotoSync", notify_service=None):
         headers,
     )
     if notify_service:
-        parts = notify_service.split(".", 1)
-        if len(parts) == 2:
-            _post_ha_service(
-                f"notify/{parts[1]}",
-                {"message": message, "title": title},
-                headers,
-            )
+        _post_ha_service(
+            "notify/send_message",
+            {"message": message, "title": title, "entity_id": notify_service},
+            headers,
+        )
 
 
 def _post_ha_service(service_path, payload, headers):
