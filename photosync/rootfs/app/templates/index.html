@@ -247,18 +247,29 @@
     function getCard(id) { return document.querySelector('.drive-card[data-id="' + id + '"]'); }
 
     function ejectDrive(id) {
-      if (!confirm("Flush writes and prepare for safe removal?")) return;
       var btn = getCard(id).querySelector(".btn-eject-btn");
-      if (btn) { btn.disabled = true; btn.textContent = "Flushing..."; }
+      if (!btn) return;
+      btn.disabled = true;
+      btn.textContent = "Flushing...";
+      btn.style.background = "var(--yellow)";
+      btn.style.color = "#000";
       fetch(apiUrl("/api/eject/" + encodeURIComponent(id)), { method: "POST" })
         .then(function(r) {
-          if (r.status === 409) { alert("Sync in progress — cancel first."); return; }
-          if (!r.ok) return r.json().then(function(d) { alert(d.error); });
+          if (r.status === 409) { btn.textContent = "Sync running"; btn.style.background = "var(--red)"; btn.style.color = "#fff"; return; }
+          if (!r.ok) return r.json().then(function(d) { btn.textContent = d.error || "Error"; btn.style.background = "var(--red)"; btn.style.color = "#fff"; });
           return r.json();
         })
-        .then(function(d) { if (d && d.status === "ejected") alert("Writes flushed. Safe to unplug the drive."); })
-        .catch(function(e) { alert("Error: " + e); })
-        .finally(function() { if (btn) { btn.disabled = false; btn.textContent = "Eject"; } });
+        .then(function(d) {
+          if (d && d.status === "ejected") {
+            btn.textContent = "Safe to unplug";
+            btn.style.background = "var(--green)";
+            btn.style.color = "#fff";
+          }
+        })
+        .catch(function() { btn.textContent = "Error"; btn.style.background = "var(--red)"; btn.style.color = "#fff"; })
+        .finally(function() {
+          setTimeout(function() { btn.disabled = false; btn.textContent = "Eject"; btn.style.background = ""; btn.style.color = ""; }, 5000);
+        });
     }
 
     function createFolder(id) {
@@ -293,7 +304,6 @@
     }
 
     function cancelSync(id) {
-      if (!confirm("Cancel sync for this drive?")) return;
       fetch(apiUrl("/api/cancel/" + encodeURIComponent(id)), { method: "POST" })
         .then(function(r) { if (!r.ok) return r.json().then(function(d) { alert(d.error); }); })
         .catch(function(e) { alert("Error: " + e); });
