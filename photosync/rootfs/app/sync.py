@@ -118,20 +118,23 @@ def run_sync(drive_label, mount_path, folder_name, remote_path, exclude_patterns
                 if raw:
                     xferring = raw.get("transferring") or []
                     current = xferring[0].get("name", "") if xferring else ""
-                    phase = "scanning"
-                    if raw.get("transfers", 0) > 0 or raw.get("totalTransfers", 0) > 0:
+                    # With --check-first, transfers only start after all checks complete.
+                    # Latch totals when first actual transfer is in progress.
+                    if xferring or raw.get("transfers", 0) > 0:
                         phase = "downloading"
                         if latched_total_files is None:
                             latched_total_files = raw.get("totalTransfers", 0)
                             latched_total_bytes = raw.get("totalBytes", 0)
-                    elif raw.get("checks", 0) > 0:
+                    else:
                         phase = "scanning"
+                    total_files = latched_total_files if latched_total_files else raw.get("totalTransfers", 0)
+                    total_bytes = latched_total_bytes if latched_total_bytes else raw.get("totalBytes", 0)
                     last_stats = {
                         "phase": phase,
-                        "bytes_transferred": raw.get("bytes", 0),
-                        "total_bytes": latched_total_bytes or raw.get("totalBytes", 0),
-                        "files_transferred": raw.get("transfers", 0),
-                        "total_files": latched_total_files or raw.get("totalTransfers", 0),
+                        "bytes_transferred": min(raw.get("bytes", 0), total_bytes) if total_bytes else 0,
+                        "total_bytes": total_bytes,
+                        "files_transferred": min(raw.get("transfers", 0), total_files) if total_files else 0,
+                        "total_files": total_files,
                         "speed": raw.get("speed", 0),
                         "eta_seconds": raw.get("eta"),
                         "elapsed_seconds": time.time() - start_time,

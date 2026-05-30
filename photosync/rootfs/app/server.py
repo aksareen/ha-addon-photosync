@@ -117,7 +117,7 @@ def _run_sync_thread(drive_id, mount_path, label):
 
             total = stats["total_bytes"]
             done = stats["bytes_transferred"]
-            job["percent"] = round((done / total) * 100, 1) if total > 0 else 0
+            job["percent"] = min(round((done / total) * 100, 1), 100) if total > 0 else 0
 
             job["phase"] = stats.get("phase", job["phase"])
 
