@@ -7,4 +7,6 @@ Thumbs.db
 *.swo
 *~
 .env
+.venv/
+.pytest_cache/
 rclone.conf
