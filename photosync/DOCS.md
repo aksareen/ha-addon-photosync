@@ -18,9 +18,7 @@ Go to the **Configuration** tab and fill in:
 
 - **koofr_email**: Your Koofr account email address
 - **koofr_password**: The app-specific password from Step 1
-- **sync_pairs**: (Optional) A list of `{remote_path, folder_name}` entries for syncing multiple Koofr folders in one run. See [Multiple Sync Pairs](#multiple-sync-pairs) below. Leave empty to use the single `remote_path` + `folder_name` options below.
-- **remote_path**: The folder path in Koofr to sync from (default: `/PhotoSync`). Should match where your phone uploads photos. Used only when `sync_pairs` is empty.
-- **folder_name**: The folder name to create on each USB drive (default: `PhotoSync`). Tip: if your drive label is also "PhotoSync", change this to something like "SyncedPhotos" to avoid a nested `PhotoSync/PhotoSync/` path. Used only when `sync_pairs` is empty.
+- **sync_pairs**: A list of `{remote_path, folder_name}` entries — each maps one Koofr folder (`remote_path`) to one folder created on each USB drive (`folder_name`). See [Sync Pairs](#sync-pairs) below. Leave empty to use the single built-in default pair (`/PhotoSync` → `PhotoSync`).
 - **mirror_deletes**: (Optional, default `false`) When `false`, sync is add-only (`rclone copy`). When `true`, the drive is mirrored to match Koofr (`rclone sync`), so files removed from Koofr are also removed from the drive. See [Mirror Mode](#mirror-mode) below.
 - **notify_service**: (Optional) A Home Assistant notify entity for push notifications, e.g. `notify.iphone_my_device`. Leave empty to disable.
 - **auto_sync_drives**: (Optional) List of drive labels that trigger auto-sync when plugged in. Also syncs matching drives on add-on startup. Example: `["PhotoSync", "Backup"]`
@@ -28,9 +26,9 @@ Go to the **Configuration** tab and fill in:
 
 Click **Save** after making changes, then restart the add-on.
 
-### Multiple Sync Pairs
+### Sync Pairs
 
-By default the add-on syncs a single Koofr folder. To sync several Koofr folders onto a drive in one run, set `sync_pairs` to a list of `{remote_path, folder_name}` entries:
+All syncing is configured through `sync_pairs` — a list where each entry maps one Koofr folder onto one folder on the drive:
 
 ```yaml
 sync_pairs:
@@ -42,7 +40,9 @@ sync_pairs:
 
 Each entry copies one Koofr folder (`remote_path`) into a folder of that name (`folder_name`) on the USB drive. All configured folders are created together by the **Create Folder** button and are synced one after another. While a sync runs, the web UI shows progress across pairs, e.g. `(2/3 · AllPhotos)`.
 
-If `sync_pairs` is left empty, the add-on falls back to the legacy single `remote_path` + `folder_name` options (defaults `/PhotoSync` and `PhotoSync`). Existing configurations continue to work unchanged.
+If `sync_pairs` is left empty, the add-on uses a single built-in default pair (`/PhotoSync` → `PhotoSync`) so it still runs out of the box.
+
+Both `remote_path` and `folder_name` may contain spaces — for example `"/All photos and videos"`. Quote such values in YAML. Spaces are preserved verbatim and work correctly because rclone is invoked with an argument list rather than through a shell.
 
 ### Mirror Mode
 
@@ -75,7 +75,7 @@ Open **PhotoSync** from the Home Assistant sidebar (camera icon).
 
 ## How Sync Works
 
-For each configured sync pair (or the single legacy folder when `sync_pairs` is empty), in sequence:
+For each configured sync pair, in sequence:
 
 1. rclone scans the Koofr folder and the matching folder on the USB drive to find new or changed files
 2. New files are downloaded directly from Koofr to the USB drive
@@ -126,7 +126,7 @@ Photos on the USB drive mirror the Koofr folder structure:
 
 ### Sync fails with "directory not found"
 
-- A `remote_path` (in `sync_pairs`, or the single `remote_path` option) doesn't exist in Koofr. Create it, or update the config.
+- A `remote_path` in `sync_pairs` doesn't exist in Koofr. Create it, or update the config.
 
 ### Where to find logs
 

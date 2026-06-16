@@ -22,18 +22,16 @@ AUTO_SYNC_DRIVES = options.get("auto_sync_drives", [])
 EXCLUDE_PATTERNS = options.get("exclude_patterns", [])
 MIRROR_DELETES = bool(options.get("mirror_deletes", False))
 
-# Sync pairs: each {remote_path, folder_name}. Falls back to the legacy single
-# remote_path/folder_name options so existing configs keep working.
+# Sync pairs: each {remote_path, folder_name} maps one Koofr folder to one
+# folder on the drive. Incomplete entries are dropped; if none are configured
+# we fall back to a single sensible default so the add-on still runs.
 SYNC_PAIRS = [
     {"remote_path": p["remote_path"], "folder_name": p["folder_name"]}
     for p in (options.get("sync_pairs") or [])
     if p.get("remote_path") and p.get("folder_name")
 ]
 if not SYNC_PAIRS:
-    SYNC_PAIRS = [{
-        "remote_path": options.get("remote_path") or "/PhotoSync",
-        "folder_name": options.get("folder_name") or "PhotoSync",
-    }]
+    SYNC_PAIRS = [{"remote_path": "/PhotoSync", "folder_name": "PhotoSync"}]
 
 FOLDER_NAMES = [p["folder_name"] for p in SYNC_PAIRS]
 

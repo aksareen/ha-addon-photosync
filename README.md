@@ -56,17 +56,15 @@ Photos stay as HEIC/MOV originals. Folder structure is preserved (`2025/06/IMG_1
 |--------|---------|-------------|
 | `koofr_email` | (required) | Koofr account email |
 | `koofr_password` | (required) | Koofr [app-specific password](https://app.koofr.net/app/admin/preferences/password) |
-| `sync_pairs` | `[]` | List of `{remote_path, folder_name}` entries — sync multiple Koofr folders in one run. See below |
-| `remote_path` | `/PhotoSync` | Legacy single-pair fallback: Koofr folder to sync from when `sync_pairs` is empty |
-| `folder_name` | `PhotoSync` | Legacy single-pair fallback: folder created on each USB drive when `sync_pairs` is empty |
+| `sync_pairs` | `[]` | List of `{remote_path, folder_name}` entries — each maps one Koofr folder to one folder on the drive. See below |
 | `mirror_deletes` | `false` | When `true`, use `rclone sync` so the drive matches Koofr (deletes propagate). See below |
 | `notify_service` | (optional) | HA notify entity, e.g. `notify.iphone_my_device` |
 | `auto_sync_drives` | `[]` | Drive labels that trigger auto-sync on mount |
 | `exclude_patterns` | OS junk files | File patterns to skip |
 
-### Multiple sync pairs
+### Sync pairs
 
-Set `sync_pairs` to copy more than one Koofr folder onto a drive, each into its own destination folder:
+All syncing is configured through `sync_pairs` — a list where each entry maps one Koofr folder onto one folder on the drive:
 
 ```yaml
 sync_pairs:
@@ -78,7 +76,9 @@ sync_pairs:
 
 Each entry maps one Koofr folder (`remote_path`) to a folder of name `folder_name` on the USB drive. All configured folders are created together by the **Create Folder** button and synced one after another; the UI shows progress across pairs like `(2/3 · AllPhotos)`.
 
-If `sync_pairs` is left empty, the add-on falls back to the legacy single `remote_path` + `folder_name` options (defaults `/PhotoSync` and `PhotoSync`), so existing configs keep working unchanged.
+If `sync_pairs` is left empty, the add-on uses a single built-in default pair (`/PhotoSync` → `PhotoSync`) so it still runs out of the box.
+
+Both `remote_path` and `folder_name` may contain spaces — for example `"/All photos and videos"`. Quote such values in YAML. Spaces are preserved verbatim and work correctly because rclone is invoked with an argument list rather than through a shell.
 
 ### Mirror mode (`mirror_deletes`)
 
@@ -89,7 +89,7 @@ In mirror mode **Koofr is the source of truth and the drive is a downstream mirr
 
 ## How It Works
 
-For each configured sync pair (or the single legacy folder if `sync_pairs` is empty), the add-on runs the following in sequence:
+For each configured sync pair, the add-on runs the following in sequence:
 
 1. **Scan** — rclone compares the Koofr folder against the matching folder on the USB drive
 2. **Transfer** — by default (`mirror_deletes: false`) `rclone copy` adds new files; in mirror mode (`mirror_deletes: true`) `rclone sync` also removes files from the drive that no longer exist on Koofr

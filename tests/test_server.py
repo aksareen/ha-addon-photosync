@@ -429,19 +429,36 @@ class TestDriveWithSync:
 
 
 # ---------------------------------------------------------------------------
-# Config parsing — sync_pairs / mirror_deletes / legacy fallback
+# Config parsing — sync_pairs / mirror_deletes
 # ---------------------------------------------------------------------------
 
 class TestConfigParsing:
     """Module-level SYNC_PAIRS / FOLDER_NAMES / MIRROR_DELETES from options."""
 
-    def test_legacy_single_pair_fallback(self):
-        """With only legacy remote_path/folder_name, one pair is derived."""
+    def test_legacy_keys_ignored(self):
+        """Legacy remote_path/folder_name are no longer read.
+
+        The module-level OPTIONS sets only the removed legacy keys and no
+        sync_pairs, so SYNC_PAIRS must be the hardcoded built-in default rather
+        than anything derived from those keys.
+        """
         assert server.SYNC_PAIRS == [
-            {"remote_path": "/TestPhotos", "folder_name": "PhotoSync"}
+            {"remote_path": "/PhotoSync", "folder_name": "PhotoSync"}
         ]
         assert server.FOLDER_NAMES == ["PhotoSync"]
         assert server.MIRROR_DELETES is False
+
+    def test_legacy_keys_ignored_via_helper(self):
+        """Legacy keys passed alongside no sync_pairs are dropped entirely."""
+        mod = _import_server_with_options({
+            "auto_sync_drives": [],
+            "remote_path": "/TestPhotos",
+            "folder_name": "MyPhotos",
+        })
+        assert mod.SYNC_PAIRS == [
+            {"remote_path": "/PhotoSync", "folder_name": "PhotoSync"}
+        ]
+        assert mod.FOLDER_NAMES == ["PhotoSync"]
 
     def test_multi_pair_and_mirror(self):
         mod = _import_server_with_options({
@@ -481,6 +498,29 @@ class TestConfigParsing:
         assert mod.SYNC_PAIRS == [
             {"remote_path": "/PhotoSync", "folder_name": "PhotoSync"}
         ]
+
+    def test_sync_pairs_preserve_spaces_in_names(self):
+        """Spaces in remote_path and folder_name are kept verbatim.
+
+        rclone is invoked with an argument list (not via a shell), so folder
+        names with spaces must survive untouched in SYNC_PAIRS and FOLDER_NAMES.
+        """
+        mod = _import_server_with_options({
+            "auto_sync_drives": [],
+            "sync_pairs": [
+                {
+                    "remote_path": "/All photos and videos",
+                    "folder_name": "All photos and videos",
+                },
+            ],
+        })
+        assert mod.SYNC_PAIRS == [
+            {
+                "remote_path": "/All photos and videos",
+                "folder_name": "All photos and videos",
+            }
+        ]
+        assert mod.FOLDER_NAMES == ["All photos and videos"]
 
 
 class TestMultiPairCreateFolder:
