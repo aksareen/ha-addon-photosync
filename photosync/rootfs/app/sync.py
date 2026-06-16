@@ -64,32 +64,62 @@ def _verify_sync(remote_path, dest, exclude_patterns):
         raise RuntimeError(f"Post-sync verification failed: {detail}")
 
 
+def _result_from(stats, status, error=None):
+    return {
+        "status": status,
+        "error": error,
+        "files_transferred": stats.get("files_transferred", 0),
+        "bytes_transferred": stats.get("bytes_transferred", 0),
+        "errors": stats.get("errors_count", 0),
+    }
+
+
 def run_sync(drive_label, mount_path, folder_name, remote_path, exclude_patterns,
+             mirror=False,
              cancel_event=None,
-             on_start=None, on_progress=None, on_stats=None,
-             on_complete=None, on_error=None):
+             on_start=None, on_progress=None, on_stats=None):
+    """Sync a single Koofr remote_path → <drive>/<folder_name>.
+
+    mirror=False → ``rclone copy`` (add-only, never deletes).
+    mirror=True  → ``rclone sync``: deletions/moves on Koofr propagate to the
+    drive. Koofr is the source of truth and the drive a downstream mirror, so a
+    wrongly-removed file is recovered by re-syncing from Koofr.
+
+    Returns a result dict: ``{"status": "complete"|"failed"|"cancelled",
+    "error", "files_transferred", "bytes_transferred", "errors"}``.
+    """
     dest = os.path.join(mount_path, folder_name)
     os.makedirs(dest, exist_ok=True)
 
     def _cancelled():
         return cancel_event and cancel_event.is_set()
 
+    proc = None
+    last_stats = {}
+    start_time = time.time()
     try:
         rc_port = _find_free_port()
         src = f"koofr:{remote_path}/"
-
-        cmd = [
-            "rclone", "copy", src, dest + "/",
+        rc_args = [
             "--config", RCLONE_CONFIG,
             "--rc", f"--rc-addr=127.0.0.1:{rc_port}", "--rc-no-auth",
-            "--stats", "0",
-            "--check-first",
-            "-v",
+            "--stats", "0", "--check-first", "-v",
         ]
+
+        if mirror:
+            # Koofr WebDAV exposes no modtime/hash → compare by size only.
+            # Koofr is the source of truth; the drive is a plain downstream
+            # mirror, so deletions/moves on Koofr propagate (files removed, no
+            # stale duplicates). Recover by re-syncing from Koofr if needed.
+            cmd = ["rclone", "sync", src, dest + "/", *rc_args, "--size-only"]
+        else:
+            cmd = ["rclone", "copy", src, dest + "/", *rc_args]
+
         for pat in exclude_patterns:
             cmd.extend(["--exclude", pat])
 
-        print(f"[photosync] sync {drive_label}: {' '.join(cmd)}")
+        print(f"[photosync] sync {drive_label}/{folder_name} "
+              f"({'mirror' if mirror else 'copy'}): {' '.join(cmd)}")
 
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -103,10 +133,7 @@ def run_sync(drive_label, mount_path, folder_name, remote_path, exclude_patterns
         )
         reader.start()
 
-        last_stats = {}
-        start_time = time.time()
         rc_ok = _wait_for_rc(rc_port, proc)
-
         if rc_ok:
             while proc.poll() is None:
                 if _cancelled():
@@ -144,16 +171,17 @@ def run_sync(drive_label, mount_path, folder_name, remote_path, exclude_patterns
         if _cancelled():
             if on_progress:
                 on_progress("[photosync] Sync cancelled")
-            return
+            return _result_from(last_stats, "cancelled")
 
         if proc.returncode != 0:
-            if on_error:
-                on_error(f"rclone exited with code {proc.returncode}")
-            return
+            return _result_from(
+                last_stats, "failed",
+                f"rclone exited with code {proc.returncode}",
+            )
 
         # Post-sync verification
         if _cancelled():
-            return
+            return _result_from(last_stats, "cancelled")
         if on_progress:
             on_progress("[photosync] Verifying sync...")
         if on_stats:
@@ -166,23 +194,19 @@ def run_sync(drive_label, mount_path, folder_name, remote_path, exclude_patterns
                 "elapsed_seconds": time.time() - start_time,
             })
 
-        _verify_sync(remote_path, dest, exclude_patterns)
+        try:
+            _verify_sync(remote_path, dest, exclude_patterns)
+        except Exception as e:
+            return _result_from(last_stats, "failed", str(e))
         if on_progress:
             on_progress("[photosync] All files verified")
 
         subprocess.run(["sync"], timeout=60)
-
-        if on_complete:
-            on_complete({
-                "files_transferred": last_stats.get("files_transferred", 0),
-                "bytes_transferred": last_stats.get("bytes_transferred", 0),
-                "errors": last_stats.get("errors_count", 0),
-            })
+        return _result_from(last_stats, "complete")
 
     except Exception as e:
         print(f"[photosync] exception: {e}")
-        if on_error:
-            on_error(str(e))
+        return _result_from(last_stats, "failed", str(e))
     finally:
         if proc and proc.poll() is None:
             proc.terminate()

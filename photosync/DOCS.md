@@ -18,13 +18,42 @@ Go to the **Configuration** tab and fill in:
 
 - **koofr_email**: Your Koofr account email address
 - **koofr_password**: The app-specific password from Step 1
-- **remote_path**: The folder path in Koofr to sync from (default: `/PhotoSync`). Should match where your phone uploads photos.
-- **folder_name**: The folder name to create on each USB drive (default: `PhotoSync`). Tip: if your drive label is also "PhotoSync", change this to something like "SyncedPhotos" to avoid a nested `PhotoSync/PhotoSync/` path.
+- **sync_pairs**: (Optional) A list of `{remote_path, folder_name}` entries for syncing multiple Koofr folders in one run. See [Multiple Sync Pairs](#multiple-sync-pairs) below. Leave empty to use the single `remote_path` + `folder_name` options below.
+- **remote_path**: The folder path in Koofr to sync from (default: `/PhotoSync`). Should match where your phone uploads photos. Used only when `sync_pairs` is empty.
+- **folder_name**: The folder name to create on each USB drive (default: `PhotoSync`). Tip: if your drive label is also "PhotoSync", change this to something like "SyncedPhotos" to avoid a nested `PhotoSync/PhotoSync/` path. Used only when `sync_pairs` is empty.
+- **mirror_deletes**: (Optional, default `false`) When `false`, sync is add-only (`rclone copy`). When `true`, the drive is mirrored to match Koofr (`rclone sync`), so files removed from Koofr are also removed from the drive. See [Mirror Mode](#mirror-mode) below.
 - **notify_service**: (Optional) A Home Assistant notify entity for push notifications, e.g. `notify.iphone_my_device`. Leave empty to disable.
 - **auto_sync_drives**: (Optional) List of drive labels that trigger auto-sync when plugged in. Also syncs matching drives on add-on startup. Example: `["PhotoSync", "Backup"]`
 - **exclude_patterns**: File patterns to skip. The defaults exclude macOS/Windows junk files.
 
 Click **Save** after making changes, then restart the add-on.
+
+### Multiple Sync Pairs
+
+By default the add-on syncs a single Koofr folder. To sync several Koofr folders onto a drive in one run, set `sync_pairs` to a list of `{remote_path, folder_name}` entries:
+
+```yaml
+sync_pairs:
+  - remote_path: "/PhotoSync"
+    folder_name: "PhotoSync"
+  - remote_path: "/AllPhotos"
+    folder_name: "AllPhotos"
+```
+
+Each entry copies one Koofr folder (`remote_path`) into a folder of that name (`folder_name`) on the USB drive. All configured folders are created together by the **Create Folder** button and are synced one after another. While a sync runs, the web UI shows progress across pairs, e.g. `(2/3 · AllPhotos)`.
+
+If `sync_pairs` is left empty, the add-on falls back to the legacy single `remote_path` + `folder_name` options (defaults `/PhotoSync` and `PhotoSync`). Existing configurations continue to work unchanged.
+
+### Mirror Mode
+
+`mirror_deletes` controls whether deletions on Koofr are propagated to the drive:
+
+- **`false` (default)**: The add-on uses `rclone copy` — add-only. New files are added or overwritten, and nothing is ever deleted from the drive.
+- **`true`**: The add-on uses `rclone sync` — the drive is made to **match** Koofr. Files that were deleted, moved, or reorganized on Koofr are also removed from the drive. This avoids stale duplicates and reclaims space.
+
+When mirror mode is on, **Koofr is the source of truth and the drive is a downstream mirror.** This is destructive but recoverable: if a file is wrongly removed from the drive, you can recover it by re-syncing from Koofr. There is intentionally no on-drive trash or backup folder. File comparison is size-only, because Koofr's WebDAV interface exposes no modification time or hash.
+
+When mirror mode is enabled, the web UI shows a "Mirror mode — deletes propagate" indicator in the header.
 
 ### Step 3: Prepare a USB drive
 
@@ -37,8 +66,8 @@ Click **Save** after making changes, then restart the add-on.
 Open **PhotoSync** from the Home Assistant sidebar (camera icon).
 
 - **Connected drives** with storage bar (used/free space)
-- **Sync Now** — manually trigger a sync from Koofr to the drive
-- **Create Folder** — creates the sync folder on a new drive
+- **Sync Now** — manually trigger a sync from Koofr to the drive (runs all configured sync pairs in sequence)
+- **Create Folder** — creates the sync folder(s) on a new drive (one per configured sync pair)
 - **Pause / Resume / Cancel** — control a running sync
 - **Eject** — flushes writes so you can safely unplug
 - **Refresh Drives** — re-scan for connected drives
@@ -46,12 +75,17 @@ Open **PhotoSync** from the Home Assistant sidebar (camera icon).
 
 ## How Sync Works
 
-1. rclone scans Koofr and the USB drive to find new or changed files
-2. New files are downloaded directly from Koofr to the USB drive
-3. After download, `rclone check --size-only` verifies all Koofr files are present on the drive
-4. Writes are flushed to disk
+For each configured sync pair (or the single legacy folder when `sync_pairs` is empty), in sequence:
 
-Resume is automatic: if sync is interrupted, re-running it skips files that already exist with the correct size. The add-on uses `rclone copy` (not `sync`), so it **never deletes** files from the drive or from Koofr.
+1. rclone scans the Koofr folder and the matching folder on the USB drive to find new or changed files
+2. New files are downloaded directly from Koofr to the USB drive
+3. In mirror mode (`mirror_deletes: true`), files that no longer exist on Koofr are removed from the drive
+4. `rclone check --size-only` verifies all Koofr files are present on the drive
+5. Writes are flushed to disk
+
+Resume is automatic: if sync is interrupted, re-running it skips files that already exist with the correct size.
+
+By default (`mirror_deletes: false`) the add-on uses `rclone copy` (not `sync`), so it **never deletes** files from the drive. With `mirror_deletes: true` it uses `rclone sync` and the drive is made to match Koofr — see [Mirror Mode](#mirror-mode). In either case the add-on never writes to Koofr; Koofr remains the source of truth.
 
 ## Auto-Sync
 
@@ -92,7 +126,7 @@ Photos on the USB drive mirror the Koofr folder structure:
 
 ### Sync fails with "directory not found"
 
-- The `remote_path` doesn't exist in Koofr. Create it, or update the config.
+- A `remote_path` (in `sync_pairs`, or the single `remote_path` option) doesn't exist in Koofr. Create it, or update the config.
 
 ### Where to find logs
 

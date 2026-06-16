@@ -150,7 +150,12 @@ class TestNotification:
 # ---------------------------------------------------------------------------
 
 class TestRunSync:
-    """Tests for run_sync — the main sync orchestrator."""
+    """Tests for run_sync — the main sync orchestrator.
+
+    run_sync no longer takes on_complete/on_error callbacks; instead it
+    RETURNS a result dict:
+        {"status", "error", "files_transferred", "bytes_transferred", "errors"}
+    """
 
     @mock.patch("sync._verify_sync")
     @mock.patch("sync._wait_for_rc", return_value=False)
@@ -158,11 +163,11 @@ class TestRunSync:
     @mock.patch("sync.subprocess.Popen")
     @mock.patch("sync._find_free_port", return_value=9999)
     @mock.patch("sync.os.makedirs")
-    def test_run_sync_success_calls_on_start_and_on_complete(
+    def test_run_sync_success_returns_complete(
         self, mock_makedirs, mock_port, mock_popen, mock_run, mock_wait_rc, mock_verify
     ):
-        """When rclone succeeds, on_start is called with the pid, and
-        on_complete is called with a stats dict."""
+        """When rclone succeeds, on_start fires with the pid and the returned
+        dict reports status == 'complete' with the result keys present."""
         proc = mock.MagicMock()
         proc.pid = 42
         proc.poll.return_value = 0
@@ -175,26 +180,25 @@ class TestRunSync:
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
         started = {}
-        completed = {}
 
         def on_start(pid):
             started["pid"] = pid
 
-        def on_complete(stats):
-            completed.update(stats)
-
-        sync.run_sync(
+        result = sync.run_sync(
             drive_label="USB1",
             mount_path="/mnt/usb",
             folder_name="PhotoSync",
             remote_path="/Photos",
             exclude_patterns=[],
             on_start=on_start,
-            on_complete=on_complete,
         )
 
         assert started["pid"] == 42
-        assert "files_transferred" in completed
+        assert result["status"] == "complete"
+        assert result["error"] is None
+        assert "files_transferred" in result
+        assert "bytes_transferred" in result
+        assert "errors" in result
         mock_verify.assert_called_once()
 
     @mock.patch("sync._verify_sync")
@@ -203,10 +207,11 @@ class TestRunSync:
     @mock.patch("sync.subprocess.Popen")
     @mock.patch("sync._find_free_port", return_value=9999)
     @mock.patch("sync.os.makedirs")
-    def test_run_sync_rclone_failure_calls_on_error(
+    def test_run_sync_rclone_failure_returns_failed(
         self, mock_makedirs, mock_port, mock_popen, mock_run, mock_wait_rc, mock_verify
     ):
-        """When rclone exits non-zero, on_error is called."""
+        """When rclone exits non-zero, the returned dict reports failure and the
+        error string, and verification is skipped."""
         proc = mock.MagicMock()
         proc.pid = 42
         proc.poll.return_value = 1
@@ -215,22 +220,16 @@ class TestRunSync:
         proc.wait.return_value = 1
         mock_popen.return_value = proc
 
-        errors = []
-
-        def on_error(msg):
-            errors.append(msg)
-
-        sync.run_sync(
+        result = sync.run_sync(
             drive_label="USB1",
             mount_path="/mnt/usb",
             folder_name="PhotoSync",
             remote_path="/Photos",
             exclude_patterns=[],
-            on_error=on_error,
         )
 
-        assert len(errors) == 1
-        assert "exited with code 1" in errors[0]
+        assert result["status"] == "failed"
+        assert "exited with code 1" in result["error"]
         mock_verify.assert_not_called()
 
     @mock.patch("sync._verify_sync")
@@ -239,10 +238,42 @@ class TestRunSync:
     @mock.patch("sync.subprocess.Popen")
     @mock.patch("sync._find_free_port", return_value=9999)
     @mock.patch("sync.os.makedirs")
-    def test_run_sync_cancel_event_stops_early(
+    def test_run_sync_verification_failure_returns_failed(
         self, mock_makedirs, mock_port, mock_popen, mock_run, mock_wait_rc, mock_verify
     ):
-        """Setting the cancel_event should prevent on_complete from firing."""
+        """A post-sync verification failure surfaces as status == 'failed'."""
+        proc = mock.MagicMock()
+        proc.pid = 42
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        proc.stdout = iter([])
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        mock_verify.side_effect = RuntimeError("Post-sync verification failed: 3 differences found")
+
+        result = sync.run_sync(
+            drive_label="USB1",
+            mount_path="/mnt/usb",
+            folder_name="PhotoSync",
+            remote_path="/Photos",
+            exclude_patterns=[],
+        )
+
+        assert result["status"] == "failed"
+        assert "verification failed" in result["error"].lower()
+
+    @mock.patch("sync._verify_sync")
+    @mock.patch("sync._wait_for_rc", return_value=False)
+    @mock.patch("sync.subprocess.run")
+    @mock.patch("sync.subprocess.Popen")
+    @mock.patch("sync._find_free_port", return_value=9999)
+    @mock.patch("sync.os.makedirs")
+    def test_run_sync_cancel_event_returns_cancelled(
+        self, mock_makedirs, mock_port, mock_popen, mock_run, mock_wait_rc, mock_verify
+    ):
+        """A pre-set cancel_event yields status == 'cancelled' (not complete or
+        failed), no verification, and a cancel message on on_progress."""
         cancel = threading.Event()
         cancel.set()  # pre-cancelled
 
@@ -254,9 +285,42 @@ class TestRunSync:
         proc.wait.return_value = 0
         mock_popen.return_value = proc
 
-        completed = []
-        errors = []
         progress = []
+
+        result = sync.run_sync(
+            drive_label="USB1",
+            mount_path="/mnt/usb",
+            folder_name="PhotoSync",
+            remote_path="/Photos",
+            exclude_patterns=[],
+            cancel_event=cancel,
+            on_progress=lambda l: progress.append(l),
+        )
+
+        assert result["status"] == "cancelled"
+        mock_verify.assert_not_called()
+        # The cancel message should be in progress
+        assert any("cancelled" in p.lower() for p in progress)
+
+    @mock.patch("sync._verify_sync")
+    @mock.patch("sync._wait_for_rc", return_value=False)
+    @mock.patch("sync.subprocess.run")
+    @mock.patch("sync.subprocess.Popen")
+    @mock.patch("sync._find_free_port", return_value=9999)
+    @mock.patch("sync.os.makedirs")
+    def test_run_sync_mirror_builds_rclone_sync_command(
+        self, mock_makedirs, mock_port, mock_popen, mock_run, mock_wait_rc, mock_verify
+    ):
+        """mirror=True → `rclone sync ... --size-only`, with no copy-only or
+        backup/delete-guard flags."""
+        proc = mock.MagicMock()
+        proc.pid = 42
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        proc.stdout = iter([])
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
         sync.run_sync(
             drive_label="USB1",
@@ -264,16 +328,84 @@ class TestRunSync:
             folder_name="PhotoSync",
             remote_path="/Photos",
             exclude_patterns=[],
-            cancel_event=cancel,
-            on_complete=lambda s: completed.append(s),
-            on_error=lambda e: errors.append(e),
-            on_progress=lambda l: progress.append(l),
+            mirror=True,
         )
 
-        assert len(completed) == 0
-        assert len(errors) == 0
-        # The cancel message should be in progress
-        assert any("cancelled" in p.lower() for p in progress)
+        cmd = mock_popen.call_args[0][0]
+        assert cmd[0] == "rclone"
+        assert cmd[1] == "sync"
+        assert "--size-only" in cmd
+        # mirror must not add a copy command or any backup/delete guards
+        assert "copy" not in cmd
+        assert "--backup-dir" not in cmd
+        assert "--max-delete" not in cmd
+        assert "--suffix" not in cmd
+
+    @mock.patch("sync._verify_sync")
+    @mock.patch("sync._wait_for_rc", return_value=False)
+    @mock.patch("sync.subprocess.run")
+    @mock.patch("sync.subprocess.Popen")
+    @mock.patch("sync._find_free_port", return_value=9999)
+    @mock.patch("sync.os.makedirs")
+    def test_run_sync_copy_builds_rclone_copy_command(
+        self, mock_makedirs, mock_port, mock_popen, mock_run, mock_wait_rc, mock_verify
+    ):
+        """mirror=False (default) → `rclone copy ...` (add-only, no deletes)."""
+        proc = mock.MagicMock()
+        proc.pid = 42
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        proc.stdout = iter([])
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+        sync.run_sync(
+            drive_label="USB1",
+            mount_path="/mnt/usb",
+            folder_name="PhotoSync",
+            remote_path="/Photos",
+            exclude_patterns=[],
+            mirror=False,
+        )
+
+        cmd = mock_popen.call_args[0][0]
+        assert cmd[0] == "rclone"
+        assert cmd[1] == "copy"
+        assert "sync" not in cmd
+
+    @mock.patch("sync._verify_sync")
+    @mock.patch("sync._wait_for_rc", return_value=False)
+    @mock.patch("sync.subprocess.run")
+    @mock.patch("sync.subprocess.Popen")
+    @mock.patch("sync._find_free_port", return_value=9999)
+    @mock.patch("sync.os.makedirs")
+    def test_run_sync_exclude_patterns_passed_through(
+        self, mock_makedirs, mock_port, mock_popen, mock_run, mock_wait_rc, mock_verify
+    ):
+        """exclude_patterns are forwarded to the rclone command as --exclude."""
+        proc = mock.MagicMock()
+        proc.pid = 42
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        proc.stdout = iter([])
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+        sync.run_sync(
+            drive_label="USB1",
+            mount_path="/mnt/usb",
+            folder_name="PhotoSync",
+            remote_path="/Photos",
+            exclude_patterns=["*.tmp", "Thumbs.db"],
+        )
+
+        cmd = mock_popen.call_args[0][0]
+        exclude_indices = [i for i, x in enumerate(cmd) if x == "--exclude"]
+        assert len(exclude_indices) == 2
+        assert cmd[exclude_indices[0] + 1] == "*.tmp"
+        assert cmd[exclude_indices[1] + 1] == "Thumbs.db"
 
 
 # ---------------------------------------------------------------------------

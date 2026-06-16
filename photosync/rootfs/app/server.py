@@ -17,11 +17,25 @@ OPTIONS_PATH = "/data/options.json"
 with open(OPTIONS_PATH) as f:
     options = json.load(f)
 
-FOLDER_NAME = options.get("folder_name", "PhotoSync")
-REMOTE_PATH = options.get("remote_path", "/PhotoSync")
 NOTIFY_SERVICE = options.get("notify_service", "")
 AUTO_SYNC_DRIVES = options.get("auto_sync_drives", [])
 EXCLUDE_PATTERNS = options.get("exclude_patterns", [])
+MIRROR_DELETES = bool(options.get("mirror_deletes", False))
+
+# Sync pairs: each {remote_path, folder_name}. Falls back to the legacy single
+# remote_path/folder_name options so existing configs keep working.
+SYNC_PAIRS = [
+    {"remote_path": p["remote_path"], "folder_name": p["folder_name"]}
+    for p in (options.get("sync_pairs") or [])
+    if p.get("remote_path") and p.get("folder_name")
+]
+if not SYNC_PAIRS:
+    SYNC_PAIRS = [{
+        "remote_path": options.get("remote_path") or "/PhotoSync",
+        "folder_name": options.get("folder_name") or "PhotoSync",
+    }]
+
+FOLDER_NAMES = [p["folder_name"] for p in SYNC_PAIRS]
 
 MAX_LOG_LINES = 200
 
@@ -50,6 +64,10 @@ def _fresh_job():
         "errors_count": 0,
         "checking": 0,
         "total_checks": 0,
+        "pair_index": 0,
+        "pair_total": 0,
+        "current_folder": "",
+        "mirror": MIRROR_DELETES,
         "progress_lines": [],
     }
 
@@ -62,7 +80,7 @@ def _get_job(drive_id):
 
 
 def _find_drive(drive_id):
-    return next((d for d in get_drives(FOLDER_NAME) if d["id"] == drive_id), None)
+    return next((d for d in get_drives(FOLDER_NAMES) if d["id"] == drive_id), None)
 
 
 def _drive_with_sync(drive):
@@ -121,68 +139,79 @@ def _run_sync_thread(drive_id, mount_path, label):
 
             job["phase"] = stats.get("phase", job["phase"])
 
-    def on_complete(stats):
+    # Run each configured pair sequentially, accumulating totals across them.
+    acc_files = acc_bytes = acc_errors = 0
+    final_status = "complete"
+    final_error = None
+
+    for idx, pair in enumerate(SYNC_PAIRS):
+        if cancel_event.is_set():
+            final_status = "cancelled"
+            break
+
         with sync_lock:
-            was_cancelling = job["status"] == "cancelling"
-            if was_cancelling:
-                job["status"] = "cancelled"
-            else:
-                job["status"] = "complete"
-                job["percent"] = 100
-            job["phase"] = "done"
-            job["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            job["files_transferred"] = stats.get("files_transferred", job["files_transferred"])
-            job["bytes_transferred"] = stats.get("bytes_transferred", job["bytes_transferred"])
-            job["errors_count"] = stats.get("errors", job["errors_count"])
+            job["pair_index"] = idx + 1
+            job["current_folder"] = pair["folder_name"]
+            job["phase"] = "scanning"
+            # Reset per-pair live counters so the UI reflects the current pair.
+            job["files_transferred"] = job["bytes_transferred"] = 0
+            job["total_files"] = job["total_bytes"] = 0
+            job["percent"] = 0
             job["current_file"] = ""
-            job["speed"] = 0
-            job["eta_seconds"] = None
 
-        if not was_cancelling:
-            files = stats.get("files_transferred", 0)
-            if files > 0:
-                msg = (f"Sync complete for '{label}': "
-                       f"{files} files copied, all verified. "
-                       f"Safe to unplug.")
-            else:
-                msg = f"'{label}' is up to date. No new files to sync."
-            send_notification(msg, title="PhotoSync", notify_service=NOTIFY_SERVICE)
+        result = run_sync(
+            drive_label=label,
+            mount_path=mount_path,
+            folder_name=pair["folder_name"],
+            remote_path=pair["remote_path"],
+            exclude_patterns=EXCLUDE_PATTERNS,
+            mirror=MIRROR_DELETES,
+            cancel_event=cancel_event,
+            on_start=on_start,
+            on_progress=on_progress,
+            on_stats=on_stats,
+        )
 
-    def on_error(error_msg):
-        with sync_lock:
-            was_cancelling = job["status"] == "cancelling"
-            if was_cancelling:
-                job["status"] = "cancelled"
-                job["error"] = None
-            else:
-                job["status"] = "failed"
-                job["error"] = error_msg
-            job["phase"] = "done"
-            job["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            job["current_file"] = ""
-            job["speed"] = 0
-            job["eta_seconds"] = None
+        acc_files += result.get("files_transferred", 0)
+        acc_bytes += result.get("bytes_transferred", 0)
+        acc_errors += result.get("errors", 0)
 
-        if not was_cancelling:
-            send_notification(
-                f"Sync FAILED for '{label}': {error_msg}",
-                title="PhotoSync",
-                notify_service=NOTIFY_SERVICE,
-            )
+        if result["status"] == "cancelled":
+            final_status = "cancelled"
+            break
+        if result["status"] == "failed":
+            final_status = "failed"
+            final_error = result.get("error") or "unknown error"
+            break
 
-    run_sync(
-        drive_label=label,
-        mount_path=mount_path,
-        folder_name=FOLDER_NAME,
-        remote_path=REMOTE_PATH,
-        exclude_patterns=EXCLUDE_PATTERNS,
-        cancel_event=cancel_event,
-        on_start=on_start,
-        on_progress=on_progress,
-        on_stats=on_stats,
-        on_complete=on_complete,
-        on_error=on_error,
-    )
+    with sync_lock:
+        job["status"] = final_status
+        job["phase"] = "done"
+        job["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        job["files_transferred"] = acc_files
+        job["bytes_transferred"] = acc_bytes
+        job["errors_count"] = acc_errors
+        job["current_file"] = ""
+        job["speed"] = 0
+        job["eta_seconds"] = None
+        if final_status == "complete":
+            job["percent"] = 100
+        if final_status == "failed":
+            job["error"] = final_error
+
+    if final_status == "complete":
+        verb = "synced" if MIRROR_DELETES else "copied"
+        if acc_files > 0:
+            msg = (f"Sync complete for '{label}': {acc_files} files {verb}, "
+                   f"all verified. Safe to unplug.")
+        else:
+            msg = f"'{label}' is up to date. No changes to sync."
+        send_notification(msg, title="PhotoSync", notify_service=NOTIFY_SERVICE)
+    elif final_status == "failed":
+        send_notification(
+            f"Sync FAILED for '{label}': {final_error}",
+            title="PhotoSync", notify_service=NOTIFY_SERVICE,
+        )
 
 
 def _start_sync_for_drive(drive_id):
@@ -190,8 +219,8 @@ def _start_sync_for_drive(drive_id):
     if not drive:
         return False
 
-    folder_path = os.path.join(drive["mount_path"], FOLDER_NAME)
-    os.makedirs(folder_path, exist_ok=True)
+    for folder_name in FOLDER_NAMES:
+        os.makedirs(os.path.join(drive["mount_path"], folder_name), exist_ok=True)
 
     job = _get_job(drive_id)
     with sync_lock:
@@ -211,7 +240,7 @@ def _start_sync_for_drive(drive_id):
 
 def _drive_watcher():
     known = set()
-    for d in get_drives(FOLDER_NAME):
+    for d in get_drives(FOLDER_NAMES):
         if d["id"] in AUTO_SYNC_DRIVES:
             print(f"[photosync] Drive '{d['id']}' already connected — syncing")
             _start_sync_for_drive(d["id"])
@@ -221,7 +250,7 @@ def _drive_watcher():
     while True:
         time.sleep(10)
         try:
-            current_drives = get_drives(FOLDER_NAME)
+            current_drives = get_drives(FOLDER_NAMES)
             current_ids = {d["id"] for d in current_drives}
             new_ids = current_ids - known
             known = current_ids
@@ -255,13 +284,16 @@ if AUTO_SYNC_DRIVES:
 @app.route("/")
 def index():
     ingress_path = request.headers.get("X-Ingress-Path", "")
-    drives = [_drive_with_sync(d) for d in get_drives(FOLDER_NAME)]
-    return render_template("index.html", drives=drives, ingress_path=ingress_path)
+    drives = [_drive_with_sync(d) for d in get_drives(FOLDER_NAMES)]
+    return render_template(
+        "index.html", drives=drives, ingress_path=ingress_path,
+        mirror=MIRROR_DELETES,
+    )
 
 
 @app.route("/api/status")
 def api_status():
-    drives = [_drive_with_sync(d) for d in get_drives(FOLDER_NAME)]
+    drives = [_drive_with_sync(d) for d in get_drives(FOLDER_NAMES)]
     return jsonify(drives)
 
 
@@ -352,10 +384,13 @@ def create_folder(drive_id):
     drive = _find_drive(drive_id)
     if not drive:
         return jsonify({"error": "Drive not found"}), 404
-    folder_path = os.path.join(drive["mount_path"], FOLDER_NAME)
     try:
-        os.makedirs(folder_path, exist_ok=True)
-        return jsonify({"status": "created", "path": folder_path})
+        created = []
+        for folder_name in FOLDER_NAMES:
+            path = os.path.join(drive["mount_path"], folder_name)
+            os.makedirs(path, exist_ok=True)
+            created.append(path)
+        return jsonify({"status": "created", "paths": created})
     except OSError as e:
         return jsonify({"error": str(e)}), 500
 

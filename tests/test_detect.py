@@ -200,6 +200,97 @@ class TestGetDrives:
         assert result[1]["id"] == "b_drive"
 
 
+class TestGetDrivesMultipleFolders:
+    """get_drives now accepts a LIST of folder names. has_sync_folder is True
+    only when EVERY configured folder exists on the drive, and each drive dict
+    reports folders_total / folders_present."""
+
+    def _setup_stats(self, mock_statvfs):
+        media_stat = mock.MagicMock(f_frsize=4096, f_blocks=1000, f_bavail=500)
+        drive_stat = mock.MagicMock(f_frsize=4096, f_blocks=2000, f_bavail=1000)
+        mock_statvfs.side_effect = lambda path: (
+            media_stat if path == "/media" else drive_stat
+        )
+
+    @mock.patch("detect.os.path.isdir")
+    @mock.patch("detect.os.listdir", return_value=["usb1"])
+    @mock.patch("detect.os.statvfs")
+    def test_all_folders_present(self, mock_statvfs, mock_listdir, mock_isdir):
+        """has_sync_folder True only when ALL configured folders exist."""
+        self._setup_stats(mock_statvfs)
+        existing = {"/media", "/media/usb1",
+                    "/media/usb1/Photos", "/media/usb1/Videos"}
+        mock_isdir.side_effect = lambda p: p in existing
+
+        result = detect.get_drives(["Photos", "Videos"])
+        assert len(result) == 1
+        assert result[0]["folders_total"] == 2
+        assert result[0]["folders_present"] == 2
+        assert result[0]["has_sync_folder"] is True
+
+    @mock.patch("detect.os.path.isdir")
+    @mock.patch("detect.os.listdir", return_value=["usb1"])
+    @mock.patch("detect.os.statvfs")
+    def test_some_folders_present(self, mock_statvfs, mock_listdir, mock_isdir):
+        """When only some configured folders exist, has_sync_folder is False
+        but folders_present reflects the partial count."""
+        self._setup_stats(mock_statvfs)
+        existing = {"/media", "/media/usb1", "/media/usb1/Photos"}
+        mock_isdir.side_effect = lambda p: p in existing
+
+        result = detect.get_drives(["Photos", "Videos"])
+        assert len(result) == 1
+        assert result[0]["folders_total"] == 2
+        assert result[0]["folders_present"] == 1
+        assert result[0]["has_sync_folder"] is False
+
+    @mock.patch("detect.os.path.isdir")
+    @mock.patch("detect.os.listdir", return_value=["usb1"])
+    @mock.patch("detect.os.statvfs")
+    def test_no_folders_present(self, mock_statvfs, mock_listdir, mock_isdir):
+        """No configured folder exists → present 0, has_sync_folder False."""
+        self._setup_stats(mock_statvfs)
+        existing = {"/media", "/media/usb1"}
+        mock_isdir.side_effect = lambda p: p in existing
+
+        result = detect.get_drives(["Photos", "Videos"])
+        assert len(result) == 1
+        assert result[0]["folders_total"] == 2
+        assert result[0]["folders_present"] == 0
+        assert result[0]["has_sync_folder"] is False
+
+    @mock.patch("detect.os.path.isdir")
+    @mock.patch("detect.os.listdir", return_value=["usb1"])
+    @mock.patch("detect.os.statvfs")
+    def test_str_input_back_compat(self, mock_statvfs, mock_listdir, mock_isdir):
+        """A single str is treated as a one-element list (back-compat path)."""
+        self._setup_stats(mock_statvfs)
+        existing = {"/media", "/media/usb1", "/media/usb1/PhotoSync"}
+        mock_isdir.side_effect = lambda p: p in existing
+
+        result = detect.get_drives("PhotoSync")
+        assert len(result) == 1
+        assert result[0]["folders_total"] == 1
+        assert result[0]["folders_present"] == 1
+        assert result[0]["has_sync_folder"] is True
+
+    @mock.patch("detect.os.path.isdir")
+    @mock.patch("detect.os.listdir", return_value=["usb1"])
+    @mock.patch("detect.os.statvfs")
+    def test_empty_folder_list_has_no_sync_folder(
+        self, mock_statvfs, mock_listdir, mock_isdir
+    ):
+        """With no configured folders, has_sync_folder is never True."""
+        self._setup_stats(mock_statvfs)
+        mock_isdir.side_effect = lambda p: p in {"/media", "/media/usb1"}
+
+        result = detect.get_drives([])
+        assert len(result) == 1
+        assert result[0]["folders_total"] == 0
+        assert result[0]["folders_present"] == 0
+        assert result[0]["has_sync_folder"] is False
+
+
 # ---------------------------------------------------------------------------
 # safe_eject
 # ---------------------------------------------------------------------------

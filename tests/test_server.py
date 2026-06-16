@@ -41,6 +41,35 @@ with mock.patch("builtins.open", side_effect=_fake_open):
     import server
 
 
+def _import_server_with_options(opts):
+    """Import a FRESH copy of server.py with the given options.json contents.
+
+    server.py reads /data/options.json and computes SYNC_PAIRS / FOLDER_NAMES /
+    MIRROR_DELETES at import time, so to exercise a different config we import
+    the module under a throwaway name with `open` stubbed. Auto-sync is left
+    empty so no watcher thread is spawned.
+    """
+    import importlib.util
+
+    def fake_open(path, *args, **kwargs):
+        if path == "/data/options.json":
+            import io
+            return io.StringIO(json.dumps(opts))
+        return _real_open(path, *args, **kwargs)
+
+    spec = importlib.util.spec_from_file_location(
+        "server_variant_" + str(abs(hash(json.dumps(opts, sort_keys=True)))),
+        os.path.join(
+            os.path.dirname(__file__), os.pardir,
+            "photosync", "rootfs", "app", "server.py",
+        ),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    with mock.patch("builtins.open", side_effect=fake_open):
+        spec.loader.exec_module(mod)
+    return mod
+
+
 @pytest.fixture
 def client():
     """Flask test client."""
@@ -245,7 +274,10 @@ class TestApiCreateFolder:
         mock_drives.return_value = [_make_drive("usb1")]
         resp = client.post("/api/create-folder/usb1")
         assert resp.status_code == 200
-        assert resp.get_json()["status"] == "created"
+        data = resp.get_json()
+        assert data["status"] == "created"
+        # Route now creates ALL configured pair folders and returns paths.
+        assert data["paths"] == ["/media/usb1/PhotoSync"]
         mock_makedirs.assert_called_once_with("/media/usb1/PhotoSync", exist_ok=True)
 
 
@@ -394,3 +426,204 @@ class TestDriveWithSync:
         result = server._drive_with_sync(drive)
         assert result["sync"]["status"] == "syncing"
         assert result["sync"]["percent"] == 42.5
+
+
+# ---------------------------------------------------------------------------
+# Config parsing — sync_pairs / mirror_deletes / legacy fallback
+# ---------------------------------------------------------------------------
+
+class TestConfigParsing:
+    """Module-level SYNC_PAIRS / FOLDER_NAMES / MIRROR_DELETES from options."""
+
+    def test_legacy_single_pair_fallback(self):
+        """With only legacy remote_path/folder_name, one pair is derived."""
+        assert server.SYNC_PAIRS == [
+            {"remote_path": "/TestPhotos", "folder_name": "PhotoSync"}
+        ]
+        assert server.FOLDER_NAMES == ["PhotoSync"]
+        assert server.MIRROR_DELETES is False
+
+    def test_multi_pair_and_mirror(self):
+        mod = _import_server_with_options({
+            "notify_service": "",
+            "auto_sync_drives": [],
+            "exclude_patterns": [],
+            "mirror_deletes": True,
+            "sync_pairs": [
+                {"remote_path": "/Photos", "folder_name": "Photos"},
+                {"remote_path": "/Videos", "folder_name": "Videos"},
+            ],
+        })
+        assert mod.SYNC_PAIRS == [
+            {"remote_path": "/Photos", "folder_name": "Photos"},
+            {"remote_path": "/Videos", "folder_name": "Videos"},
+        ]
+        assert mod.FOLDER_NAMES == ["Photos", "Videos"]
+        assert mod.MIRROR_DELETES is True
+
+    def test_sync_pairs_skips_incomplete_entries(self):
+        """Pairs missing remote_path or folder_name are dropped."""
+        mod = _import_server_with_options({
+            "auto_sync_drives": [],
+            "sync_pairs": [
+                {"remote_path": "/Photos", "folder_name": "Photos"},
+                {"remote_path": "/Videos"},          # missing folder_name
+                {"folder_name": "Docs"},             # missing remote_path
+            ],
+        })
+        assert mod.SYNC_PAIRS == [
+            {"remote_path": "/Photos", "folder_name": "Photos"}
+        ]
+
+    def test_empty_sync_pairs_falls_back_to_defaults(self):
+        """No sync_pairs and no legacy keys → built-in PhotoSync default."""
+        mod = _import_server_with_options({"auto_sync_drives": []})
+        assert mod.SYNC_PAIRS == [
+            {"remote_path": "/PhotoSync", "folder_name": "PhotoSync"}
+        ]
+
+
+class TestMultiPairCreateFolder:
+    """create-folder route creates ALL pair folders for a multi-pair config."""
+
+    def test_create_all_pair_folders(self):
+        mod = _import_server_with_options({
+            "auto_sync_drives": [],
+            "sync_pairs": [
+                {"remote_path": "/Photos", "folder_name": "Photos"},
+                {"remote_path": "/Videos", "folder_name": "Videos"},
+            ],
+        })
+        mod.app.config["TESTING"] = True
+        with mod.app.test_client() as c, \
+                mock.patch.object(mod, "get_drives",
+                                  return_value=[_make_drive("usb1")]), \
+                mock.patch.object(mod.os, "makedirs") as mock_makedirs:
+            resp = c.post("/api/create-folder/usb1")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["status"] == "created"
+            assert data["paths"] == [
+                "/media/usb1/Photos", "/media/usb1/Videos",
+            ]
+            assert mock_makedirs.call_count == 2
+
+
+class TestSyncThreadMultiPair:
+    """_run_sync_thread iterates ALL pairs, accumulates stats, sends ONE
+    notification at the end."""
+
+    def _build(self, opts):
+        mod = _import_server_with_options(opts)
+        return mod
+
+    def test_iterates_all_pairs_and_accumulates(self):
+        mod = self._build({
+            "auto_sync_drives": [],
+            "mirror_deletes": False,
+            "sync_pairs": [
+                {"remote_path": "/Photos", "folder_name": "Photos"},
+                {"remote_path": "/Videos", "folder_name": "Videos"},
+            ],
+        })
+
+        calls = []
+
+        def fake_run_sync(*args, **kwargs):
+            calls.append(kwargs["folder_name"])
+            return {
+                "status": "complete", "error": None,
+                "files_transferred": 3, "bytes_transferred": 100, "errors": 0,
+            }
+
+        notifs = []
+        with mock.patch.object(mod, "run_sync", side_effect=fake_run_sync), \
+                mock.patch.object(mod, "send_notification",
+                                  side_effect=lambda *a, **k: notifs.append((a, k))):
+            mod._run_sync_thread("usb1", "/media/usb1", "usb1")
+
+        # Both pairs ran, in order
+        assert calls == ["Photos", "Videos"]
+        # One notification at the end
+        assert len(notifs) == 1
+        job = mod._get_job("usb1")
+        assert job["status"] == "complete"
+        assert job["files_transferred"] == 6   # 3 + 3 accumulated
+        assert job["bytes_transferred"] == 200
+        # Default (non-mirror) → "copied" verb
+        assert "copied" in notifs[0][0][0]
+
+    def test_mirror_uses_synced_verb(self):
+        mod = self._build({
+            "auto_sync_drives": [],
+            "mirror_deletes": True,
+            "sync_pairs": [
+                {"remote_path": "/Photos", "folder_name": "Photos"},
+            ],
+        })
+
+        notifs = []
+        with mock.patch.object(mod, "run_sync", return_value={
+                    "status": "complete", "error": None,
+                    "files_transferred": 5, "bytes_transferred": 10, "errors": 0,
+                }), \
+                mock.patch.object(mod, "send_notification",
+                                  side_effect=lambda *a, **k: notifs.append(a)):
+            mod._run_sync_thread("usb1", "/media/usb1", "usb1")
+
+        assert len(notifs) == 1
+        assert "synced" in notifs[0][0]
+        assert "5 files" in notifs[0][0]
+
+    def test_zero_files_reports_up_to_date(self):
+        mod = self._build({
+            "auto_sync_drives": [],
+            "sync_pairs": [
+                {"remote_path": "/Photos", "folder_name": "Photos"},
+            ],
+        })
+
+        notifs = []
+        with mock.patch.object(mod, "run_sync", return_value={
+                    "status": "complete", "error": None,
+                    "files_transferred": 0, "bytes_transferred": 0, "errors": 0,
+                }), \
+                mock.patch.object(mod, "send_notification",
+                                  side_effect=lambda *a, **k: notifs.append(a)):
+            mod._run_sync_thread("usb1", "/media/usb1", "usb1")
+
+        assert len(notifs) == 1
+        assert "up to date" in notifs[0][0]
+
+    def test_failure_stops_and_notifies_once(self):
+        """A failed pair stops the loop and produces a single FAILED notice."""
+        mod = self._build({
+            "auto_sync_drives": [],
+            "sync_pairs": [
+                {"remote_path": "/Photos", "folder_name": "Photos"},
+                {"remote_path": "/Videos", "folder_name": "Videos"},
+            ],
+        })
+
+        calls = []
+
+        def fake_run_sync(*args, **kwargs):
+            calls.append(kwargs["folder_name"])
+            return {
+                "status": "failed", "error": "rclone exited with code 1",
+                "files_transferred": 0, "bytes_transferred": 0, "errors": 1,
+            }
+
+        notifs = []
+        with mock.patch.object(mod, "run_sync", side_effect=fake_run_sync), \
+                mock.patch.object(mod, "send_notification",
+                                  side_effect=lambda *a, **k: notifs.append(a)):
+            mod._run_sync_thread("usb1", "/media/usb1", "usb1")
+
+        # Stopped after the first (failed) pair — second never ran
+        assert calls == ["Photos"]
+        assert len(notifs) == 1
+        assert "FAILED" in notifs[0][0]
+        job = mod._get_job("usb1")
+        assert job["status"] == "failed"
+        assert job["error"] == "rclone exited with code 1"

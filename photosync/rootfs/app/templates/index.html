@@ -131,7 +131,7 @@
 
   <div class="header">
     <h1>PhotoSync</h1>
-    <div class="subtitle">Koofr &rarr; USB Drive Sync</div>
+    <div class="subtitle">Koofr &rarr; USB Drive Sync{% if mirror %} &middot; <span style="color: var(--yellow);">Mirror mode &mdash; deletes propagate</span>{% endif %}</div>
     <button class="btn btn-secondary" onclick="location.reload()" style="margin-top: 10px; font-size: 12px; padding: 5px 14px;">Refresh Drives</button>
   </div>
 
@@ -160,7 +160,7 @@
         </div>
 
         <div class="folder-status {% if drive.has_sync_folder %}exists{% else %}missing{% endif %}">
-          {% if drive.has_sync_folder %}&#10003; PhotoSync folder exists{% else %}&#9888; No PhotoSync folder{% endif %}
+          {% if drive.has_sync_folder %}&#10003; {{ drive.folders_total }} sync folder{{ 's' if drive.folders_total != 1 else '' }} ready{% else %}&#9888; {{ drive.folders_present }} of {{ drive.folders_total }} sync folder{{ 's' if drive.folders_total != 1 else '' }} present{% endif %}
         </div>
 
         <!-- Sync progress panel -->
@@ -336,14 +336,16 @@
 
       var phaseLabel = card.querySelector(".phase-label");
       var phasePct = card.querySelector(".phase-pct");
+      var folderTag = (sync.pair_total > 1 && sync.current_folder)
+        ? "(" + sync.pair_index + "/" + sync.pair_total + " · " + sync.current_folder + ") " : "";
       if (status === "syncing" && phase === "scanning") {
-        phaseLabel.textContent = "Scanning files...";
+        phaseLabel.textContent = folderTag + "Scanning files...";
         phasePct.textContent = "";
       } else if (status === "syncing" && phase === "downloading") {
-        phaseLabel.textContent = "Downloading...";
+        phaseLabel.textContent = folderTag + "Downloading...";
         phasePct.textContent = sync.percent + "%";
       } else if (status === "syncing" && phase === "verifying") {
-        phaseLabel.textContent = "Verifying...";
+        phaseLabel.textContent = folderTag + "Verifying...";
         phasePct.textContent = sync.percent + "%";
       } else if (status === "paused") {
         phaseLabel.innerHTML = "Paused <span class='badge badge-paused'>PAUSED</span>";
@@ -437,8 +439,9 @@
         (drive.free_bytes / 1073741824).toFixed(1) + " GB free</span>";
 
       var folderEl = card.querySelector(".folder-status");
-      if (drive.has_sync_folder) { folderEl.className = "folder-status exists"; folderEl.innerHTML = "&#10003; PhotoSync folder exists"; }
-      else { folderEl.className = "folder-status missing"; folderEl.innerHTML = "&#9888; No PhotoSync folder"; }
+      var fs = drive.folders_total != 1 ? "s" : "";
+      if (drive.has_sync_folder) { folderEl.className = "folder-status exists"; folderEl.innerHTML = "&#10003; " + drive.folders_total + " sync folder" + fs + " ready"; }
+      else { folderEl.className = "folder-status missing"; folderEl.innerHTML = "&#9888; " + drive.folders_present + " of " + drive.folders_total + " sync folder" + fs + " present"; }
 
       var logSection = card.querySelector(".log-section");
       var logArea = document.getElementById("log-" + drive.id);
